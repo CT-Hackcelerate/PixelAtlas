@@ -10,7 +10,8 @@ detailed docs it links to:
 | `solution-design.md` | Workflow, template system, validation, token economy (the **how**) |
 | `architecture.md` | Components, MCP server tool contract, deployment, diagrams |
 | `execution-plan-phases1-3.md` | The actual build schedule/scope being implemented right now, with a running done/not-done checklist — check this first to see current progress |
-| `implementation-status.md` | Phase-by-phase build log, local dev environment setup, Copilot Chat testing steps, troubleshooting table, and what's not yet implemented |
+| `implementation-status.md` | Phase-by-phase build log, local dev environment setup, and what's not yet implemented |
+| `testing-with-copilot-chat.md` | Manual test steps for the read-only/generation/modify commands via Copilot Chat, plus a troubleshooting table |
 | `orthanc-setup.md` | Running the reference Orthanc PACS via Docker |
 | `docker-wsl-setup.md` | Docker Desktop + WSL2 setup on Windows |
 | `vscode-git-claude-setup.md` | VS Code, Git, and Claude/Copilot setup |
