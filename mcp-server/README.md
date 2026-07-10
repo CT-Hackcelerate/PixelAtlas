@@ -3,7 +3,7 @@
 The Pixel Atlas MCP server — a local Python process that exposes DICOM
 generation/validation/PACS tools over MCP stdio to Copilot Chat (or any other
 MCP client). See [architecture.md §3](../docs/architecture.md#3-dicom-mcp-server--bare-minimum-spec)
-for the full tool contract and [execution-plan-3day.md](../docs/execution-plan-3day.md)
+for the full tool contract and [execution-plan-phases1-3.md](../docs/execution-plan-phases1-3.md)
 for what's implemented so far.
 
 ## Files
@@ -35,7 +35,7 @@ for what's implemented so far.
    shown to the model.
 2. Call `audit_log.log_call(...)` before returning, so every invocation is
    traceable.
-3. If it's a Day 3+ tool that mutates state (e.g. `modify_dataset`), update
+3. If it's a Phase 3+ tool that mutates state (e.g. `modify_dataset`), update
    `job_registry` and reuse `generator`/`validator`/`pacs_store` rather than
    re-implementing tag/PACS logic inline.
 4. Add a corresponding `.github/prompts/<command>.prompt.md` if it should be

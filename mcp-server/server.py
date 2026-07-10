@@ -1,9 +1,9 @@
 """Pixel Atlas MCP server — entry point.
 
-Day 1: read-only tools (list_templates, get_template_info, list_pacs_studies,
-get_job_status, health_check). Day 2 adds the generation pipeline
+Phase 1: read-only tools (list_templates, get_template_info, list_pacs_studies,
+get_job_status, health_check). Phase 2 adds the generation pipeline
 (resolve_seed, generate_dataset, validate_dataset, store_to_pacs).
-modify_dataset lands on Day 3. See docs/execution-plan-3day.md.
+modify_dataset lands on Phase 3. See docs/execution-plan-phases1-3.md.
 """
 
 import logging

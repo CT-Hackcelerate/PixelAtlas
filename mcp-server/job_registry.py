@@ -1,6 +1,6 @@
 """In-memory job registry (v1 — no persistence across server restarts).
 
-Populated by generate_dataset/modify_dataset (Day 2+). Day 1 only exposes
+Populated by generate_dataset/modify_dataset (Phase 2+). Phase 1 only exposes
 read access via get_job_status so /status has something real to call.
 """
 

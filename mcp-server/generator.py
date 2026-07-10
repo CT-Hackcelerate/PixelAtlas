@@ -198,7 +198,7 @@ def _draw_randomized_values(tag_rules: dict, rng: random.Random) -> dict:
 
 
 def _resolve_prior_identity(prior_of_study_uid: str, days_before: int | None) -> dict:
-    """Priors support (Day 3, new scope beyond solution-design.md): resolve the
+    """Priors support (Phase 3, new scope beyond solution-design.md): resolve the
     reference study's patient identity + date, so the generated study can reuse
     them and be offset earlier in time — a "prior" for that patient, not an
     unrelated new patient. Each prior still gets its own independent

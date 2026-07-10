@@ -1,15 +1,15 @@
 # Demo script
 
-A walkthrough of everything implemented through Day 3, in the order a live
+A walkthrough of everything implemented through Phase 3, in the order a live
 demo would run it. Each step names the slash command (or natural-language
 prompt) and what to expect. Run `scripts/setup.ps1` first if the environment
 isn't already up.
 
-Referenced by [execution-plan-3day.md](execution-plan-3day.md) Day 3's
+Referenced by [execution-plan-phases1-3.md](execution-plan-phases1-3.md) Phase 3's
 "dry-run the full demo script twice" task — dry-run status is noted per step
 below; script-level (tool functions called directly, bypassing Copilot Chat)
 for both runs, interactive Copilot Chat run-through is still outstanding for
-every command (tracked in execution-plan-3day.md, not just this doc).
+every command (tracked in execution-plan-phases1-3.md, not just this doc).
 
 ## 1. Environment check
 
@@ -86,7 +86,7 @@ as step 5 before `store_to_pacs` runs — the destructive-overwrite
 confirmation and the store confirmation are two separate questions, not one.
 The result includes a `note` about the PACS's own overwrite-policy caveat
 (Orthanc defaults to *not* overwriting same-SOPInstanceUID instances unless
-`OverwriteInstances` is configured — observed directly during Day 3 testing,
+`OverwriteInstances` is configured — observed directly during Phase 3 testing,
 not just a theoretical caveat).
 
 ## 7. Validate — standalone
@@ -126,5 +126,5 @@ tag-name mapping logic in the tool itself.
 
 | Run | Date | Method | Result |
 |---|---|---|---|
-| 1 | 2026-07-07 | Direct tool calls (steps 2, 5, 6, 7 — generate/modify/validate) | All passed; step 6 confirmed Orthanc's overwrite-policy caveat is real, not hypothetical (see `execution-plan-3day.md` §3) |
+| 1 | 2026-07-07 | Direct tool calls (steps 2, 5, 6, 7 — generate/modify/validate) | All passed; step 6 confirmed Orthanc's overwrite-policy caveat is real, not hypothetical (see `execution-plan-phases1-3.md` §3) |
 | 2 | 2026-07-07 | Direct tool calls (steps 2, 4, 8 — generate, priors, feature lookup) | All passed; priors confirmed shared PatientID + correct StudyDate offset in Orthanc |

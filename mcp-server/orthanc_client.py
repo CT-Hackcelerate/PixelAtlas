@@ -1,7 +1,7 @@
 """Thin wrapper around the Orthanc REST API.
 
 Used both for the resolve_seed similarity search (later) and direct PACS
-browsing via list_pacs_studies (this file, Day 1).
+browsing via list_pacs_studies (this file, Phase 1).
 """
 
 import requests

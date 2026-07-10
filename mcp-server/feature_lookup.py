@@ -1,6 +1,6 @@
 """check_pacs_feature — generic DICOM tag presence/value lookup against the PACS.
 
-New scope beyond solution-design.md (Day 3): "do we have any axial study" or
+New scope beyond solution-design.md (Phase 3): "do we have any axial study" or
 "do we have any study with a Modality LUT" turned out to be two instances of
 the same underlying need — checking whether some tag is present (optionally
 with a specific value) on data already in the PACS. Rather than hardcoding

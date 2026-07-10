@@ -3,9 +3,9 @@
     Happy-path bootstrap for Pixel Atlas's local dev environment.
 
 .DESCRIPTION
-    Scope note (Day 3, execution-plan-3day.md): the original plan described
+    Scope note (Phase 3, execution-plan-phases1-3.md): the original plan described
     this as "Docker check + Orthanc up + image build", assuming a
-    containerized MCP server. What was actually built through Day 1-3 is a
+    containerized MCP server. What was actually built through Phase 1-3 is a
     NATIVE Python (.venv) MCP server talking to a containerized Orthanc - no
     Dockerfile for the MCP server itself exists. This script automates that
     real setup, not the aspirational containerized one. See
@@ -15,7 +15,7 @@
     interactive/admin consent and can't be silently scripted.
 
     DCMTK is treated as a soft dependency here (informational check, not a
-    hard failure) - see mcp-server/README.md and execution-plan-3day.md
+    hard failure) - see mcp-server/README.md and execution-plan-phases1-3.md
     section 5: only storescu/dcmftest are actually used by this codebase,
     and both have a working fallback (Orthanc REST upload,
     structural-checks-only) if missing.

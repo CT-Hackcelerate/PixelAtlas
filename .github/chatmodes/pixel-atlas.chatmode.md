@@ -33,7 +33,7 @@ Rules:
 - Report results as compact summaries (UIDs, counts, pass/fail) — never dump
   raw per-instance tag data into the chat.
 
-Day-3 status: all five commands are implemented — `/generate`, `/modify`,
+Current status: all five commands are implemented — `/generate`, `/modify`,
 `/validate` (standalone, `path=` or `study=`), `/status`, `/list-templates` —
 plus `check_pacs_feature` for ad hoc "does the PACS have X" questions outside
 those five commands.

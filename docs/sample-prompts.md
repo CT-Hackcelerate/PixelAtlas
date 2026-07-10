@@ -58,7 +58,7 @@ user should hand-set — so the agent should reject this before calling
 
 ## 2. Priors
 
-New use case beyond the original solution design (added Day 3): generating a
+New use case beyond the original solution design (added Phase 3): generating a
 study that reads as an earlier scan of the *same* (synthetic) patient, for
 before/after comparison workflows. Expected tool call:
 `generate_dataset(..., prior_of_study_uid=<uid>, days_before=<n>)`.
@@ -281,7 +281,7 @@ answer to "what can I override" is "everything except this short list."
 
 ## 7. Generic PACS feature lookup
 
-New use case (added Day 3): "does the PACS already have data with property
+New use case (added Phase 3): "does the PACS already have data with property
 X" for an arbitrary X, not hardcoded per-feature. Expected tool call:
 `check_pacs_feature(tag, value?, modality?, date_range?)`. **By design there
 is no natural-language-to-tag mapping inside the tool** — the agent must
