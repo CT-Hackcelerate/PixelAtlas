@@ -1,0 +1,56 @@
+template_id: mr-image
+iod_name: MR Image IOD
+modality: MR
+body_part: ""       # generic IOD-level template — not tied to one body part
+orientation: ""      # generic IOD-level template — not tied to one orientation
+sop_class_uid: 1.2.840.10008.5.1.4.1.1.4   # MR Image Storage
+has_seed_data: true                         # synthetic fallback .dcm, see scripts/generate_seed.py
+seed_params:
+  include_frame_of_reference: true          # MR Image IOD requires a Frame of Reference module
+tag_rules:
+  fixed:
+    Manufacturer: "Pixel Atlas Synthetic"
+    BodyPartExamined: BRAIN
+    PatientBirthDate: ""
+    PatientSex: "O"
+    StudyDate: "20260101"
+    StudyTime: "000000"
+    StudyID: "1"
+    AccessionNumber: "SEED0001"
+    ReferringPhysicianName: ""
+    SeriesNumber: "1"
+    AcquisitionNumber: "1"
+    ImageType: ["ORIGINAL", "PRIMARY", "M", "NORM"]
+    PatientPosition: "HFS"
+    PositionReferenceIndicator: ""
+    ScanningSequence: "SE"
+    SequenceVariant: "NONE"
+    ScanOptions: ""
+    MRAcquisitionType: "2D"
+    RepetitionTime: "500"
+    EchoTime: "20"
+    EchoTrainLength: "1"
+    InversionTime: "0"
+    TriggerTime: "0"
+    NumberOfAverages: "1"
+    ImagingFrequency: "63.87"
+    ImagedNucleus: "1H"
+    EchoNumbers: "1"
+    MagneticFieldStrength: "1.5"
+    SpacingBetweenSlices: "3.0"
+    NumberOfPhaseEncodingSteps: "256"
+    PercentSampling: "100"
+    PercentPhaseFieldOfView: "100"
+    PixelBandwidth: "130"
+    ReceiveCoilName: "HEAD"
+    FlipAngle: "90"
+    SliceThickness: "3.0"
+    ImageOrientationPatient: ["1", "0", "0", "0", "1", "0"]
+    PixelSpacing: ["0.9", "0.9"]
+  sequence:
+    InstanceNumber: "i + 1"
+    SliceLocation: "start=-60.0, step=3.0"
+    ImagePositionPatient: "derive_from(SliceLocation)"
+  randomized:
+    PatientName: synthetic_name_pool
+    PatientID: generate_synthetic_id

@@ -1,0 +1,29 @@
+templates:
+  - template_id: ct-image
+    iod_name: CT Image IOD
+    modality: CT
+    body_part: ""
+    orientation: ""
+    path: CT/ct-image
+    has_seed_data: true  # synthetic seed .dcm, see scripts/generate_seed.py
+  - template_id: mr-image
+    iod_name: MR Image IOD
+    modality: MR
+    body_part: ""
+    orientation: ""
+    path: MR/mr-image
+    has_seed_data: true  # synthetic seed .dcm, see scripts/generate_seed.py
+  - template_id: us-image
+    iod_name: Ultrasound Image IOD
+    modality: US
+    body_part: ""
+    orientation: ""
+    path: US/us-image
+    has_seed_data: true  # synthetic seed .dcm, see scripts/generate_seed.py
+  - template_id: mg-image
+    iod_name: Digital Mammography X-Ray Image IOD (For Presentation)
+    modality: MG
+    body_part: ""
+    orientation: ""
+    path: MG/mg-image
+    has_seed_data: true  # synthetic seed .dcm, see scripts/generate_seed.py

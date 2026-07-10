@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "pixel-atlas": {
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["${workspaceFolder}/mcp-server/server.py"],
+      "env": {
+        "PIXEL_ATLAS_TEMPLATES": "${workspaceFolder}/templates",
+        "PIXEL_ATLAS_STAGING": "${workspaceFolder}/staging",
+        "PIXEL_ATLAS_LOG_DIR": "${workspaceFolder}/.pixel-atlas/logs",
+        "ORTHANC_URL": "http://localhost:8042",
+        "ORTHANC_USER": "orthanc",
+        "ORTHANC_PASSWORD": "orthanc"
+      }
+    }
+  }
+}
