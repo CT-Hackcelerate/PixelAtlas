@@ -1,301 +1,209 @@
-# Pixel Atlas Copilot Agent — Architecture
+# Pixel Atlas — Architecture
 
-Covers components, the DICOM MCP server contract, and deployment. See
-[use-cases.md](use-cases.md) for scope and [solution-design.md](solution-design.md)
-for the detailed workflow this architecture executes.
+> The current, implemented architecture. Companion to
+> [solution-design.md](solution-design.md) (the **how**),
+> [ai-driven-simple-overview.md](ai-driven-simple-overview.md) (plain English),
+> and [ai-driven-comprehensive-plan.md](ai-driven-comprehensive-plan.md) (full
+> build reference).
 
-## 1. Architectural Overview
+## 1. Architectural overview
 
-- **Local-first, MCP-mediated tool use.** The "agent" is GitHub Copilot Chat in VS
-  Code Agent Mode (model: GPT-4o), acting as a thin orchestrator. All DICOM-specific
-  work — template access, tag rewriting, UID generation, validation, PACS I/O — is
-  implemented as deterministic Python code behind a custom **Model Context Protocol
-  (MCP) server**, not as LLM-generated logic.
-- **PACS-first sourcing.** Before any generation, the server checks the PACS for
-  similar existing data (`resolve_seed`) and only proposes the bundled template seed
-  data as a user-confirmed fallback — see [solution-design.md §3](solution-design.md#3-seed-resolution-pacs-first-template-fallback).
-- **Two deployment paths, one server core.** v1 targets VS Code + a locally-run MCP
-  server (Path A, [§5](#5-deployment-architecture-path-a--local-v1)). The same MCP server core is
-  designed to be reusable behind a hosted GitHub Copilot Extension/Skillset later
-  (Path B, [§9](#9-extensibility--path-b-hosted-copilot-extension))
-  without rewriting the DICOM logic.
-- **Everything DICOM-sensitive stays local to the PACS network** in Path A; only
-  natural-language prompts and structured plans (never binary DICOM data) cross to
-  the Copilot/GPT-4o cloud backend.
+Local-first, MCP-mediated: the agent decides *what*, the MCP server does the *how*
+deterministically. The knowledge and generation core is:
 
-## 2. Component Architecture
+- **Knowledge comes from a standard-derived DICOM Knowledge Base (KB)**, not
+  per-template YAML. One KB covers every SOP Class and is reused across all
+  requests and modalities.
+- **The agent produces a DICOM Generation Spec** (JSON, canonically the DICOM
+  JSON Model; XML optional) grounded on the KB. This structured IR — not template
+  cloning — is what drives generation.
+- **A deterministic Materializer library converts the spec into `.dcm` files.**
+  The LLM authors one spec; the Materializer expands N instances, synthesizes
+  pixel data, and assigns UIDs — the same token discipline (one bounded planning artifact per study).
+- **Everything DICOM-sensitive stays local**; only NL prompts and the (synthetic,
+  non-binary) spec cross to the Copilot/GPT-4o cloud.
+
+The trust boundary, deployment paths (A local / B hosted), and non-functional
+posture are standard local-first (developer machine + local PACS network vs. the Copilot cloud).
+
+## 2. Component architecture
 
 ```mermaid
 flowchart TB
     subgraph WS["Developer Workstation (Windows 11 + WSL2)"]
         subgraph VSC["VS Code"]
-            CC["Copilot Chat<br/>(Agent Mode)"]
-            CM["Chat Mode:<br/>Pixel Atlas<br/>(.github/chatmodes)"]
-            PF["Prompt files:<br/>/generate /modify<br/>/validate /status<br/>/list-templates"]
-            CI["Custom instructions<br/>(.github/copilot-instructions.md)"]
+            CC["Copilot Chat (Agent Mode)<br/>authors/edits the Generation Spec"]
+            CM["Chat Mode: Pixel Atlas"]
+            PF["Prompt files:<br/>/generate /modify<br/>/validate /status /list-recipes"]
         end
         subgraph MCPSRV["Pixel Atlas MCP Server (Python)"]
             DISP["Tool dispatcher"]
-            TE["Template Engine<br/>(manifest.yaml + iod_spec.yaml<br/>knowledge base)"]
-            UIDG["UID Generator"]
-            PYD["pydicom<br/>(in-process tag rewrite,<br/>generate/modify)"]
-            DCW["DCMTK binaries<br/>(storescu, dcmftest — optional)"]
-            VAL["Validator<br/>(dicom-validator + structural checks)"]
-            PC["PACS Client"]
-            JR["Job Registry + Log"]
+            KB["DICOM Knowledge Base<br/>(iod_lookup.py — standard-derived,<br/>all SOP Classes; get_iod_requirements,<br/>describe_attributes)"]
+            SPECV["Spec Validator<br/>(validate_spec — grounding<br/>vs KB, pre-materialization)"]
+            MAT["Materializer<br/>(spec → N .dcm: from_json,<br/>per-instance rules, pixel synth,<br/>UID gen)"]
+            EXT["Spec Extractor<br/>(extract_spec: PACS study → DICOM JSON)"]
+            UIDG["UID Generator (uid_strategy.py)"]
+            PIX["Pixel Synthesizer (seed_builder.py)"]
+            VAL["Validator<br/>(dicom-validator + structural)"]
+            PC["PACS Client (orthanc_client.py)"]
+            REC["Recipe Store<br/>(cached validated specs)"]
+            JR["Job Registry + Audit Log"]
         end
-        FS[("Filesystem:<br/>templates/, staging/, logs/")]
+        FS[("Filesystem:<br/>staging/, recipes/, logs/")]
     end
 
-    subgraph DOCKER["Docker Desktop (local containers)"]
+    subgraph DOCKER["Docker Desktop"]
         ORTHANC[("Orthanc PACS")]
     end
-
     subgraph CLOUD["GitHub Cloud"]
-        GPT["Copilot backend<br/>(GPT-4o inference)"]
+        GPT["Copilot backend (GPT-4o)"]
     end
 
     CC <--> GPT
-    CC --> CM --> PF --> CI
+    CC --> CM --> PF
     CC <-->|MCP stdio| DISP
-    DISP --> TE --> FS
-    DISP --> UIDG
-    DISP --> PYD --> FS
-    DISP --> VAL --> DCW
-    VAL --> PYD
-    DISP --> PC --> DCW
-    DISP --> JR
-    PC <-->|DICOM C-STORE<br/>or REST| ORTHANC
+    DISP --> KB
+    DISP --> SPECV --> KB
+    DISP --> EXT --> PC
+    DISP --> MAT
+    MAT --> KB
+    MAT --> UIDG
+    MAT --> PIX
+    MAT --> FS
+    DISP --> VAL --> FS
+    DISP --> REC --> FS
+    DISP --> PC --> ORTHANC
+    DISP --> JR --> FS
 ```
 
-| Component | Role |
-|---|---|
-| Copilot Chat (Agent Mode) | Parses user intent, plans tags, decides which MCP tools to call, confirms risky/large actions, summarizes results. Model: GPT-4o. |
-| Chat mode (`pixel-atlas.chatmode.md`) | Restricts the toolset available to the agent to the Pixel Atlas MCP tools + minimal file read tools — improves both safety and token economy. |
-| Prompt files (`.github/prompts/*.prompt.md`) | Implement `/generate`, `/modify`, `/validate`, `/status`, `/list-templates` as reusable, versioned slash commands. |
-| Custom instructions (`.github/copilot-instructions.md`) | Repo-wide, always-included context: what Pixel Atlas is, PACS-first/template-fallback rule, non-destructive-by-default rule, no-PHI rule, confirmation thresholds. Kept short (§ token economy). |
-| Pixel Atlas MCP Server | Local Python process (or container) exposing the tool contract in [§3](#3-dicom-mcp-server--bare-minimum-spec) over stdio. |
-| pydicom (in-process) | All tag rewriting for `generate_dataset`/`modify_dataset` happens as plain `pydicom` `setattr` calls inside the server process — no `dcmodify` subprocess (see `mcp-server/generator.py`'s module docstring). |
-| DCMTK binaries | Only `storescu` (PACS C-STORE, via `pacs_store.py`) and `dcmftest` (basic per-file readability check, via `validator.py`) are ever shelled out to — both optional/soft dependencies. `dcmodify`/`dciodvfy`/`findscu` are not used anywhere; IOD conformance is `dicom-validator` (a Python import), and PACS queries go through Orthanc's REST API. |
-| Template Engine | Reads `catalog.yaml`/`manifest.yaml` (generation fill-rules) and `iod_spec.yaml` (the committed IOD knowledge base — mandatory/conditional/optional modules and tags, backing the `get_iod_requirements` tool via `iod_lookup.py`), and clones/interpolates seed instances via `seed_builder.py` — either PACS-fetched (preferred) or bundled fallback seed data. |
-| PACS Client | Talks to the configured PACS via DICOM C-STORE or Orthanc's REST API — used both for the `resolve_seed` similarity search (checked first, before any template is used) and for fetch/store during generation. |
-| Job Registry + Log | In-memory job state (v1) + append-only local log file for audit. |
-| Orthanc PACS | Reference test PACS, run via Docker per [orthanc-setup.md](orthanc-setup.md). |
+Component roles:
 
-## 3. DICOM MCP Server — Bare-Minimum Spec
+| Component | Status | Role |
+|---|---|---|
+| Copilot Chat | **Reframed** | Now authors/edits a structured Generation Spec grounded on KB tool responses — not just picking a template and overrides. |
+| DICOM Knowledge Base | **New (subsumes Template Engine's `iod_spec.yaml`)** | Standard-derived, all-SOP-Class knowledge. Backs `get_iod_requirements` + `describe_attributes`. Reused by Spec Validator and Materializer. |
+| Spec Validator | **New** | Deterministic grounding of a spec vs the KB before materialization, **plus curated cross-tag consistency rules** (pixel-module group, Modality↔SOPClass, geometry triplet; decision #1) and pixel-module-tag rejection (decision #2). |
+| Spec Store | **New** | Holds validated specs server-side keyed by `spec_id` (decision #6) so the spec isn't re-sent between `validate_spec` → `materialize_dataset`; repairs apply a diff. |
+| Materializer | **New (replaces the template clone-and-rewrite core)** | Compiles a spec → `.dcm` (from_json, per-instance/per-frame rules, UID gen). **Probe-first** (decision #5); handles single-frame/multi-frame/PR/KO (decision #4); preserves source pixels on the PACS path (decision #2). |
+| Spec Extractor | **New** | PACS study → DICOM JSON Model spec, for the PACS-first and modify paths. **No PHI scrubbing for now** (decision #8). |
+| Pixel Synthesizer | **Generalized** | Modality-agnostic Image Pixel module synthesis from the spec's `pixel` directive, IOD path only (was per-template seed `.dcm`). |
+| Recipe Store | **New (replaces Template Catalog)** | Auto-grown cache of validated specs keyed by modality+bodypart+orientation+SOPClass+module-flags (decision #7); `list_recipes`/`get_recipe`. |
+| Audit Log | **Extended** | Per job records full spec + provenance + KB edition (decision #11) — server-side only, zero token cost. |
+| UID Generator, Validator, PACS Client, Job Registry, Orthanc | **Unchanged** | Post-generation and I/O are format-agnostic. |
 
-**Goal:** the smallest tool surface that supports generate/modify/validate/status
-end-to-end. No auth, no multi-tenancy, no persistent job store, no template-authoring
-UI in v1 — all explicitly deferred.
+## 3. Revised MCP tool contract
 
-- **Language/runtime:** Python 3.11+, official `mcp` Python SDK, `pydicom` for
-  in-process tag manipulation, `dicom-validator` (PyPI) for IOD conformance
-  checking. Only `storescu` and `dcmftest` (both optional/soft dependencies) are
-  invoked as DCMTK subprocesses — `dcmodify`/`dciodvfy`/`findscu` are not used.
-- **Transport:** stdio (local process spawned by VS Code per `.vscode/mcp.json`).
-  Path B ([§9](#9-extensibility--path-b-hosted-copilot-extension))
-  swaps this for a remote HTTP/SSE MCP transport without changing tool logic.
+The MCP tool contract:
+Unchanged tools (`validate_dataset`, `store_to_pacs`, `list_pacs_studies`,
+`check_pacs_feature`, `get_job_status`, `health_check`) keep their current
+signatures.
 
 | Tool | Input | Output | Notes |
 |---|---|---|---|
-| `resolve_seed` | `{modality, body_part?, orientation?, sop_class_uid?}` | `{source_type: pacs\|template\|none, pacs_candidates[], template_candidates[]}` | **Called before any generation.** Queries the PACS first (via `list_pacs_studies` internally); only reports a template candidate if no PACS match exists. Implements the PACS-first/template-fallback rule (solution-design §3). |
-| `list_templates` | `{modality?, body_part?, orientation?}` | `[{template_id, modality, body_part, orientation, sop_class_uid, has_seed_data}]` | Reads `catalog.yaml`; paginated, default limit 20. This is a **tag-spec** catalog browse, not a data source lookup. |
-| `get_template_info` | `{template_id}` | tag rules + `protected_tags` (no pixel data) | `protected_tags` are the only tags a caller can't override (sequence-derived + UID tags); any other tag valid for the IOD is fair game. Consulted on every `/generate`, independent of `resolve_seed`'s outcome. |
-| `get_iod_requirements` | `{template_id?, sop_class_uid?}` | committed `iod_spec.yaml` contents: modules (mandatory/conditional/optional) + Type 1/1C/2/2C/3 tags for M/C modules | Read-only IOD knowledge-base lookup, backed by `iod_lookup.py` (no `dicom-validator` call at request time — see solution-design §6.1). Used to check a tag's legitimacy/type before proposing an override, including internally by `modify_dataset`'s validation against a PACS study's actual SOP Class. |
-| `generate_dataset` | `{seed_source: {type: pacs\|template, ref}, instance_count, overrides, target_pacs?}` | `{job_id, study_uid, series_uid, output_path, count, seed_source}` | Runs the full fetch/load→clone→rewrite→UID pipeline (solution-design §8) in one call, including an IOD-fill safety net for any mandatory tag still missing. Rejects a `template` seed source unless the chat layer has recorded user confirmation. |
-| `modify_dataset` | `{source: {study_uid \| local_path}, overrides, regenerate_uids}` | `{job_id, study_uid, output_path, count}` | Fetches an explicitly-named source (not a similarity search), validates overrides via the same shared policy as `generate_dataset` (`override_policy.py`: reject protected tags and anything not valid for the study's actual IOD, per `get_iod_requirements`), then reuses the generation pipeline. |
-| `validate_dataset` | `{path \| study_uid}` | `{passed, checked_instances, sampling_ratio, errors[], warnings[]}` | `dicom-validator` IOD conformance + structural checks, sampled per solution-design §10. |
-| `store_to_pacs` | `{path \| study_uid, pacs_alias}` | `{stored_count, failed_count, failed_sop_uids[]}` | `storescu` batch, or Orthanc REST fallback. |
-| `list_pacs_studies` | `{modality?, patient_name?, date_range?}` | `[{study_uid, modality, date, description}]` | Orthanc REST `/studies`. Used directly for `/modify` discovery, and internally by `resolve_seed` for similarity search. |
-| `check_pacs_feature` | `{tag, value?, modality?}` | `{present, example_study_uids[]}` | Checks whether the PACS already has data with a given tag/value, independent of the template catalog — see `.github/chatmodes/pixel-atlas.chatmode.md` for tag-resolution guidance. |
-| `get_job_status` | `{job_id}` | `{state, progress_pct, message}` | In-memory registry lookup. |
-| `health_check` | `{}` | `{mcp_server, orthanc_reachable, template_count, dcmtk_binaries_on_path}` | Startup/smoke-test tool — confirms the server, PACS, and template catalog are all reachable. |
+| `get_iod_requirements` | `{sop_class_uid? \| modality?}` | modules (M/C/U) + Type 1/1C/2/2C/3 tags (keyword, VR, VM, condition) | **Expanded** to the full KB — any SOP Class, not just templated ones. Primary grounding tool. Backed by `iod_lookup.py`; no `dicom-validator` call at request time. |
+| `describe_attributes` | `{keywords[] \| tags[]}` | `[{tag, keyword, vr, vm, retired?}]` | **New.** Fast batch VR/keyword lookup while the AI authors a spec. |
+| `validate_spec` | `{spec}` | `{grounded, spec_id, errors[]:{tag,keyword,reason}, warnings[]}` | **New.** Deterministic pre-materialization grounding vs KB (tag exists, VR, IOD validity, Type-1 presence, protected-tag placement) **plus the curated cross-tag consistency rules** — pixel-module group, Modality↔SOPClass, geometry triplet — and **rejects pixel-module tags in `attributes`** (decisions #1, #2). On success **stores the spec server-side and returns a `spec_id`** (decision #6) so it need not be re-sent. Feeds the repair loop. |
+| `extract_spec` | `{study_uid \| path}` | `{spec}` (DICOM JSON Model envelope) | **New.** Fetches an existing study and emits a Generation Spec. **No PHI scrubbing for now (decision #8)** — source identity and the Image Pixel module are preserved as-is (reference PACS assumed to hold test data). Basis for PACS-first generate and for modify. |
+| `materialize_dataset` | `{spec_id, instance_count?, target_pacs?, job_id?}` | `{job_id, study_uid, series_uid, output_path, count}` | **New (replaces `generate_dataset`).** Takes a **`spec_id`** (decision #6), not the full spec. **Probe-first (decision #5):** materializes and fully validates one instance before expanding to N. IOD path synthesizes the pixel module; **PACS path preserves source pixels untouched (decision #2)**. Handles multi-frame (count = frames) and PR/KO (reference-based, no pixels) per solution-design §10 (decision #4). Rejects an ungrounded `spec_id`. Reuses UID/staging/job-registry/safety-net machinery. |
+| `resolve_seed` | `{modality, body_part?, orientation?, sop_class_uid?}` | `{source_type: pacs\|iod, pacs_candidates[]}` | **Kept, simplified.** On a PACS hit → agent calls `extract_spec`; otherwise `source_type=iod` (KB-authored spec) — the old `template`/`none` outcomes collapse into `iod` (no coverage gap). **Matching stays lightweight** (indexed `ModalitiesInStudy` query + `StudyDescription` substring for body_part/orientation; **no per-instance tag scanning**) so it doesn't slow down as the PACS grows — see [solution-design.md §4.1](solution-design.md#41-seed-matching-criteria-kept-lightweight). |
+| `modify_dataset` | `{source:{study_uid\|path}, overrides, regenerate_uids}` | `{job_id, study_uid, output_path, count}` | **Reframed** as a convenience wrapper over `extract_spec` → apply overrides → `materialize_dataset`. Same non-destructive default + `confirm_destructive` gate. |
+| `list_recipes` / `get_recipe` | `{modality?, body_part?, orientation?}` / `{recipe_id}` | recipe summaries / a cached spec | **Replaces `list_templates`/`get_template_info`.** Browse the auto-grown recipe cache. |
+| `generate_study` | `{modality, count=1, body_part?, orientation?, enhanced?, overrides?, cine_rate?, study_uid?}` | `{job_id, study_uid, count, frames?, output_path, validation, approx_tokens}` | **One-shot generation (preferred path).** Builds a conformant study from defaults + auto-fill. **New:** `study_uid` pins the new series to an existing study (for multi-series workflows) — reuses that study's identity (PatientID/PatientName/StudyDate) automatically, avoiding double-entry. |
+| `list_series_instances` | `{study_uid, series_uid?}` | `{instances: [{series_uid, sop_class_uid, sop_instance_uid, instance_number}]}` | **New.** Enumerates stored instances for a PACS study (optionally one series). Used to get concrete instance UIDs for PR/KO `references` blocks — never read `.dcm` files directly for this. Errors if the study/series isn't stored yet. |
 
-**Explicit non-goals for v1:** no user auth (single local user), no queueing across
-server restarts, no template upload/authoring endpoint (templates are added via a
-normal file/PR workflow, solution-design §6.5), no multi-PACS routing logic beyond a
-named-alias config file, no pixel-level PACS similarity matching (metadata matching
-only, solution-design §3).
-
-## 4. Copilot-Side Artifacts
-
-Repo layout for the VS Code-native integration (Path A):
-
-```
-.vscode/
-  mcp.json                        # registers the Pixel Atlas MCP server
-.github/
-  copilot-instructions.md         # repo-wide agent context (kept short)
-  chatmodes/
-    pixel-atlas.chatmode.md       # scopes tools + preferred model (GPT-4o)
-  prompts/
-    generate.prompt.md
-    modify.prompt.md
-    validate.prompt.md
-    status.prompt.md
-    list-templates.prompt.md
-templates/                        # tag template catalog + fallback seed data, see solution-design §6
-mcp-server/                       # Pixel Atlas MCP server source (Python)
-```
-
-`.vscode/mcp.json` (conceptual):
-
-```jsonc
-{
-  "servers": {
-    "pixel-atlas": {
-      "command": "python",
-      "args": ["${workspaceFolder}/mcp-server/server.py"],
-      "env": { "PIXEL_ATLAS_TEMPLATES": "${workspaceFolder}/templates" }
-    }
-  }
-}
-```
-
-`pixel-atlas.chatmode.md` front matter (conceptual):
-
-```yaml
-description: Pixel Atlas — generate/modify/validate synthetic DICOM test data
-tools: ["pixel-atlas/*"]     # only this MCP server's tools + read-only workspace files
-model: GPT-4o
-```
-
-## 5. Deployment Architecture (Path A — local, v1)
+## 4. The IR pipeline (data flow)
 
 ```mermaid
-flowchart TB
-    subgraph HOST["Developer Laptop — Windows 11"]
-        subgraph WSL2["WSL2"]
-        end
-        subgraph DD["Docker Desktop"]
-            O["orthanc container<br/>ports 8042 (HTTP) / 4242 (DICOM)"]
-            M["pixel-atlas-mcp container<br/>(Python + pydicom + DCMTK)<br/>optional: bundles all native deps"]
-        end
-        VSCODE["VS Code process"]
-        VOL[("bind mount:<br/>templates/, staging/, orthanc-data/")]
-    end
-    GH["GitHub Copilot Cloud<br/>(GPT-4o)"]
-
-    VSCODE -- HTTPS --> GH
-    VSCODE -- "stdio (docker exec / local process)" --> M
-    M <--> VOL
-    O <--> VOL
-    M -- "DICOM C-STORE/C-FIND (localhost:4242)<br/>or REST (localhost:8042)" --> O
+flowchart LR
+    P["User prompt"] --> A["Agent (GPT-4o)"]
+    A -->|"resolve_seed"| RS{PACS match?}
+    RS -->|yes| EX["extract_spec<br/>(study → DICOM JSON)"]
+    RS -->|no| KBQ["get_iod_requirements<br/>describe_attributes"]
+    EX --> SPEC["Generation Spec<br/>(JSON / XML IR)"]
+    KBQ --> A2["Agent authors spec<br/>(grounded on KB)"] --> SPEC
+    SPEC --> VS["validate_spec<br/>(grounding gate)"]
+    VS -->|errors| A2
+    VS -->|grounded| MAT["materialize_dataset<br/>(expand N, pixel synth, UIDs)"]
+    MAT --> DCM[("staging/*.dcm")]
+    DCM --> VD["validate_dataset"] --> ST["store_to_pacs"] --> ORT[("Orthanc")]
+    SPEC -.cache on success.-> REC[("Recipe Store")]
 ```
 
-Two ways to run the MCP server itself, both supported:
+The IR (the Generation Spec) is the contract between the AI (author) and the
+Materializer (consumer). Everything left of `materialize_dataset` is
+knowledge/planning (LLM + KB, cheap, O(1) in instance count); everything right is
+deterministic bulk work (no LLM, scales with N).
 
-1. **Containerized (recommended default)** — a single `pixel-atlas-mcp` Docker
-   image bundles Python, `pydicom`, and the DCMTK binaries, so nothing needs native
-   installation beyond Docker Desktop itself. VS Code launches it via
-   `docker run -i --rm pixel-atlas-mcp` as the MCP server command.
-2. **Native process** — Python 3.11+ and DCMTK installed directly on the host (or
-   inside the existing WSL2 Ubuntu distro), for environments where an extra Docker
-   container isn't desired. Slower to bootstrap, documented as the fallback path.
+### 4.1 Multi-series workflow
 
-## 6. Prerequisites & Setup
+```mermaid
+flowchart TD
+    A["generate_study(modality=CT, count=50)"] --> B["store_to_pacs"]
+    B --> C["✓ Series 1 stored<br/>study_uid = 1.2.3.4.5"]
+    C --> D["generate_study(modality=CT, count=50,<br/>study_uid=1.2.3.4.5)"]
+    D --> E["store_to_pacs"]
+    E --> F["✓ Series 2 stored, same study"]
+    F --> G{Need PR?}
+    G -->|Yes| H["list_series_instances(study_uid, series_uid_1)"]
+    H --> I["[returns instance UIDs]"]
+    I --> J["extract_spec or author spec with<br/>references block"]
+    J --> K["validate_spec → materialize_dataset"]
+    K --> L["store_to_pacs"]
+    L --> M["✓ PR stored, same study"]
+    G -->|No| N["Done"]
+```
 
-| Prerequisite | Purpose | Install |
-|---|---|---|
-| VS Code | Host IDE | Manual download (see [vscode-git-claude-setup.md](vscode-git-claude-setup.md)) |
-| GitHub Copilot + Copilot Chat extensions, Agent Mode + MCP enabled | Runs the agent | Sign-in + org policy toggle (admin-controlled; cannot be auto-installed) |
-| Docker Desktop + WSL2 | Runs Orthanc and (optionally) the containerized MCP server | See [docker-wsl-setup.md](docker-wsl-setup.md); Docker Desktop install itself needs interactive consent and cannot be silently automated |
-| Python 3.11+ (native path only) | Runs the MCP server outside Docker | `winget install Python.Python.3.11` |
-| DCMTK (native path only, optional) | `storescu`/`dcmftest` — soft dependencies; `health_check` reports which binaries are on PATH | `winget install DCMTK.DCMTK` if available, else manual install from the DCMTK project; unnecessary if using the containerized MCP server |
+**Key:** `study_uid` parameter on `generate_study` pins the new series to an existing
+study; identity (PatientID/Name/StudyDate) is reused automatically. `list_series_instances`
+provides the instance UIDs for PR/KO cross-references.
 
-**"Auto install" reality check:** Docker Desktop and the Copilot org policy toggle
-both require interactive/admin consent and cannot be silently scripted end-to-end.
-What *can* be automated is everything after that:
+## 5. Deployment architecture
 
-- `scripts/setup.ps1` — a PowerShell bootstrap script that checks for
-  Docker/Python/DCMTK, uses `winget` to install what's missing and automatable,
-  pulls/builds the `pixel-atlas-mcp` image, and starts the Orthanc container (the
-  single-container command from [orthanc-setup.md](orthanc-setup.md)).
-- `.devcontainer/devcontainer.json` (optional, most turnkey for the native path) —
-  a Dev Container image with Python, `pydicom`, and DCMTK pre-installed, so opening
-  the repo in a container gives a ready environment with one VS Code prompt.
+Deployment:
+VS Code + local (containerized or native) MCP server + Dockerized Orthanc; stdio
+transport for Path A, remote HTTP/SSE for Path B. The redesign adds **no new
+runtime services** — the KB, Spec Validator, Materializer, Spec Extractor, and
+Recipe Store are all in-process modules of the existing MCP server. The only new
+on-disk artifact is `recipes/` (replacing `templates/`), plus the one-time
+KB build output consumed by `iod_lookup.py`.
 
-### Setup steps for a new user
+## 6. Prerequisites & setup
 
-1. Install VS Code, Docker Desktop (with WSL2 integration), and sign in to GitHub
-   Copilot — one-time, manual (see table above).
-2. Clone the repo, open it in VS Code.
-3. Run `./scripts/setup.ps1` — verifies/installs remaining prerequisites, starts
-   Orthanc, pulls the `pixel-atlas-mcp` image.
-4. In VS Code Copilot settings, confirm "Agent Mode" and "MCP Servers" are enabled
-   (org policy permitting).
-5. Reload the VS Code window — it auto-starts the `pixel-atlas` MCP server per
-   `.vscode/mcp.json`.
-6. Open Copilot Chat, select the **Pixel Atlas** chat mode.
-7. Run `/status` as a smoke test — expect the MCP server, DCMTK, and Orthanc to all
-   report reachable.
+No new
+prerequisites: the KB is built from `dicom-validator` (already a dependency) and
+the pydicom data dictionary (already present). XML serialization, if enabled, uses
+a small pure-Python native-model converter — no extra native binaries.
 
-## 7. End-User Usage
+## 7. Token & cost economy (architectural hooks)
 
-Once set up, a user works entirely from Copilot Chat in the `Pixel Atlas` chat mode:
+Maps to [solution-design.md §13](solution-design.md#13-repair-loop--token-economy):
 
-- `Generate 200 axial CT instances` or `/generate modality=CT count=200 orientation=axial`
-  → agent first checks the PACS for similar existing data; if found, it confirms the
-  plan and clones it, otherwise it asks before falling back to the built-in CT
-  template — then generates, validates, stores, and returns the StudyInstanceUID
-  plus an Orthanc web viewer link (`http://localhost:8042/...`).
-- `/list-templates modality=MR` → quick check of which tag templates exist (and
-  whether fallback seed data is bundled) before asking for a generation.
-- `/modify study=1.2.3.4.5 Modality=MR` → derives a new study from an existing PACS
-  entry.
-- `/validate study=1.2.3.4.5` → conformance report for any study, generated or not.
-- `/status` → environment health check; `/status job=<id>` → progress of a specific
-  generation.
+| Hook | Where |
+|---|---|
+| One O(1) spec per study; N-loop + pixel synthesis in a single `materialize_dataset` call | Materializer |
+| Deterministic `validate_spec` catches grounding errors before any file I/O; bounded repair loop | Spec Validator |
+| Recipe cache short-circuits authoring for repeat requests | Recipe Store |
+| KB responses are compact, structured, cached per session; not re-inlined | KB |
+| Spec (synthetic tag values) and never DICOM binaries/pixels cross to the cloud | Boundary |
+| Validation/report capping + sampling | Validator (unchanged) |
 
-## 8. Non-Functional Architecture Concerns
+## 8. Extensibility — Path B (hosted)
 
-- **Token/cost economy** — architectural hooks that enable the practices in
-  [solution-design.md §14](solution-design.md#14-token--cost-economy): the chat
-  mode's restricted toolset, the pre-indexed `catalog.yaml`, and pushing all bulk
-  looping into the MCP server rather than the chat loop.
-- **Scalability** — v1 is single-user/single-machine; the in-memory job registry and
-  local staging directory are the natural limits. Path B ([§9](#9-extensibility--path-b-hosted-copilot-extension))
-  is the scale-out path if concurrent/shared usage is needed.
-- **Security boundary** — the trust boundary is the developer's machine + local
-  PACS network vs. the GitHub Copilot cloud. Only natural-language text and
-  structured plans (modality, counts, tag names/values) cross that boundary; DICOM
-  binaries never do (solution-design §16).
-- **Versioning** — the MCP server and the template catalog version independently;
-  a template manifest schema version field (future) allows the server to reject or
-  migrate stale manifests instead of silently misreading them.
-- **Observability** — local append-only log (solution-design §13) is sufficient for
-  v1's single-user scope; centralized logging is a Path B concern.
+Path B (hosted) —
+and *better suited* to it: the standard-derived KB and the Recipe Store are
+naturally shared/centralized assets (one KB per standard edition; recipes shared
+across teams). The tool contracts in §3 are exposed over remote HTTP/SSE
+unchanged; the DICOM domain logic (KB, Spec Validator, Materializer) does not
+change with transport.
 
-## 9. Extensibility — Path B (Hosted Copilot Extension)
-
-Also referred to as a GitHub Copilot Extension / Skillset, hosted outside VS Code.
-
-Documented now, **not implemented in v1**, so the core MCP server is built in a way
-that doesn't need to be rewritten if/when this path is chosen (e.g. to support
-[UC-09, headless/CI generation](use-cases.md#uc-09-future--headlessci-triggered-generation),
-or non-VS-Code users).
-
-| Aspect | Path A (v1, this document) | Path B (future) |
-|---|---|---|
-| Entry point | VS Code Copilot Chat, Agent Mode | GitHub Copilot Extension (Skillset) backed by a GitHub App, usable from GitHub.com or any Copilot surface |
-| MCP transport | Local stdio | Remote HTTP/SSE MCP endpoint, authenticated |
-| Hosting | Developer's own machine | A hosted service (e.g. container app / Azure/AWS) running the same MCP server core |
-| Auth | Implicit (single local user, local PACS) | GitHub App OAuth + per-org PACS routing/config |
-| Template catalog | Local filesystem in the repo | Centralized store (e.g. blob storage) shared across teams |
-| PACS access | Local/dev-network Orthanc | Routed per-org/per-environment PACS targets, with stricter network policy |
-| What's reused unchanged | — | Tool contracts ([§3](#3-dicom-mcp-server--bare-minimum-spec)), template manifest schema, DCMTK wrapper, validation logic |
-
-The migration is additive: the same `list_templates` / `generate_dataset` /
-`validate_dataset` / `store_to_pacs` tool contracts are exposed over a different
-transport and hosting model; the DICOM domain logic does not change.
-
-## 10. Risks & Mitigations
+## 9. Risks & mitigations
 
 | Risk | Mitigation |
 |---|---|
-| A bad template manifest generates non-conformant data at scale | `validate_dataset` runs before every `store_to_pacs`; golden template regression tests in CI (solution-design §17) |
-| Large generations burn excessive tokens via chat back-and-forth | Bulk work isolated in single MCP calls; single batch confirmation; capped/sampled reports (solution-design §14) |
-| Accidental overwrite of a real/shared PACS study | Non-destructive-by-default (`regenerate_uids=true`); explicit confirmation required for in-place edits |
-| DCMTK/Docker prerequisite drift across developer machines | Containerized MCP server bundles exact DCMTK/Python versions; `setup.ps1` pins versions |
-| Template catalog accidentally includes real PHI | Contribution workflow (solution-design §6.5) requires anonymization + admin review before merge |
-| Agent uses template fallback without the user noticing | `generate_dataset` mechanically rejects a template `seed_source` unless the chat layer recorded explicit user confirmation (solution-design §5, §12) |
+| AI emits an ungrounded/hallucinated tag | `validate_spec` rejects it before materialization; `validate_dataset` is the second gate before store |
+| `dicom-validator` internal KB shape changes on upgrade | Pin the version; isolate all access behind `iod_lookup.py` (single wrapper) |
+| Repair loop burns tokens on a hard request | Bounded retries then fail-loud; recipe cache prevents re-paying for known requests |
+| XML round-trip loses envelope fidelity | Keep JSON canonical; gate XML behind a round-trip test before promoting it |
+| Recipe drift across KB editions | Version recipes by KB edition; invalidate on edition bump |
+| Loss of the hand-review step templates got | Curated recipes can still be committed/PR-reviewed; conformance is enforced by validation regardless |
+| Pixel realism (AI drives tags, not anatomy) | Out of scope — synthetic pixel data is not clinically realistic |

@@ -82,8 +82,9 @@ def _find_orthanc_study_id(study_uid: str, session: requests.Session, timeout: f
 
 
 def get_study_details(study_uid: str, timeout: float = 10.0) -> dict:
-    """Fetch a study's patient identity + date — used by generate_dataset's priors
-    support to reuse a reference study's PatientID/PatientName/StudyDate."""
+    """Fetch a study's patient identity + date/description — used by generate_dataset's
+    priors support and by attach-to-existing-study series generation to reuse a
+    reference study's identity. Raises ValueError if the study isn't in Orthanc."""
     session = _session()
     orthanc_study_id = _find_orthanc_study_id(study_uid, session, timeout)
     resp = session.get(f"{config.ORTHANC_URL}/studies/{orthanc_study_id}", timeout=timeout)
@@ -96,6 +97,8 @@ def get_study_details(study_uid: str, timeout: float = 10.0) -> dict:
         "patient_id": patient_tags.get("PatientID", ""),
         "patient_name": patient_tags.get("PatientName", ""),
         "study_date": main_tags.get("StudyDate", ""),
+        "study_description": main_tags.get("StudyDescription", ""),
+        "accession_number": main_tags.get("AccessionNumber", ""),
     }
 
 
@@ -138,6 +141,42 @@ def get_instance_tags(instance_id: str, timeout: float = 10.0) -> dict:
 def fetch_first_instance_bytes(study_uid: str, timeout: float = 15.0) -> bytes:
     """Fetch the raw DICOM bytes of one instance from a study, to use as a clone seed."""
     return fetch_instance_bytes(get_first_instance_id(study_uid, timeout), timeout)
+
+
+def list_series_instances(study_uid: str, series_uid: str | None = None, timeout: float = 10.0) -> list[dict]:
+    """Enumerate stored instances for a study (optionally narrowed to one series) —
+    the lookup an agent needs to build a PR/KO `references` block against instances
+    already in the PACS, without ever reading a .dcm file directly.
+
+    Raises ValueError if nothing matches (study/series not yet stored)."""
+    query: dict[str, str] = {"StudyInstanceUID": study_uid}
+    if series_uid:
+        query["SeriesInstanceUID"] = series_uid
+    body = {
+        "Level": "Instance",
+        "Query": query,
+        "Expand": True,
+        "RequestedTags": ["SeriesInstanceUID", "SOPClassUID", "SOPInstanceUID", "InstanceNumber"],
+    }
+    resp = _session().post(f"{config.ORTHANC_URL}/tools/find", json=body, timeout=timeout)
+    resp.raise_for_status()
+    results = resp.json()
+    if not results:
+        scope = f"study '{study_uid}'" + (f" series '{series_uid}'" if series_uid else "")
+        raise ValueError(f"No stored instances found for {scope}")
+
+    instances = []
+    for entry in results:
+        tags = entry.get("RequestedTags", {})
+        instances.append(
+            {
+                "series_uid": tags.get("SeriesInstanceUID", ""),
+                "sop_class_uid": tags.get("SOPClassUID", ""),
+                "sop_instance_uid": tags.get("SOPInstanceUID", ""),
+                "instance_number": tags.get("InstanceNumber", ""),
+            }
+        )
+    return instances
 
 
 def upload_instance(dicom_bytes: bytes, timeout: float = 15.0) -> dict:
