@@ -38,13 +38,9 @@ _MODALITY_PIXEL = {
 _DEFAULT_PIXEL = {"rows": 128, "columns": 128, "samplesPerPixel": 1,
                   "photometricInterpretation": "MONOCHROME2", "bitsAllocated": 16, "generator": "phantom"}
 
-# VR → placeholder value for autofilled Type-1 tags.
-_VR_PLACEHOLDER = {
-    "CS": "UNKNOWN", "LO": "UNKNOWN", "SH": "UNKNOWN", "PN": "UNKNOWN", "UC": "UNKNOWN",
-    "LT": "UNKNOWN", "ST": "UNKNOWN", "UT": "UNKNOWN", "AE": "UNKNOWN",
-    "DA": "20000101", "TM": "120000", "DT": "20000101120000", "AS": "000Y",
-    "IS": "0", "DS": "0", "US": 0, "UL": 0, "SS": 0, "SL": 0, "FL": 0.0, "FD": 0.0,
-}
+# VR → placeholder value for autofilled Type-1 tags. Single source of truth
+# lives in iod_lookup.py (shared with the KB's generic macro-skeleton builder).
+_VR_PLACEHOLDER = kb.VR_PLACEHOLDER
 # VRs we must NOT blindly autofill (managed elsewhere or need real content).
 _SKIP_AUTOFILL_VR = {"UI", "SQ", "AT", "OB", "OW", "OF", "UN"}
 
@@ -65,7 +61,10 @@ def baseline_spec(modality: str, count: int, body_part: str | None = None,
     attrs.setdefault("Manufacturer", "Pixel Atlas Synthetic")
 
     per_instance = {"InstanceNumber": {"rule": "index+1"}}
-    if modality in _CROSS_SECTIONAL:
+    # Enhanced (functional-group) IODs carry geometry inside the Shared/Per-Frame
+    # Functional Groups instead (materializer builds those separately) — setting
+    # these at the dataset root there is a validator "TagUnexpected", not a fill.
+    if modality in _CROSS_SECTIONAL and kb.multiframe_kind(sop_class) != "enhanced":
         attrs.setdefault("ImageOrientationPatient", ["1", "0", "0", "0", "1", "0"])
         attrs.setdefault("PixelSpacing", ["0.7", "0.7"])
         attrs.setdefault("SliceThickness", "1.5")
@@ -104,10 +103,19 @@ def autofill_required(spec: dict) -> list[str]:
     overrides = spec.get("overrides") or {}
     per_instance = spec.get("perInstance") or {}
     present = set(attrs) | set(overrides) | set(per_instance)
+    pixel = spec.get("pixel") or {}
+    # What mandatory_tags' condition evaluator can already resolve at this
+    # point — closes gaps like Enhanced MR's Complex Image Component, which
+    # conditions on SOPClassUID only (see iod_lookup._cond_holds).
+    context = {**attrs, **overrides}
+    if pixel.get("photometricInterpretation"):
+        context["PhotometricInterpretation"] = pixel["photometricInterpretation"]
+    if pixel.get("samplesPerPixel"):
+        context["SamplesPerPixel"] = str(pixel["samplesPerPixel"])
     unfilled = []
-    for tag in kb.mandatory_tags(sop_class):
+    for tag in kb.mandatory_tags(sop_class, context=context):
         kw, vr = tag["keyword"], tag.get("vr")
-        if tag["type"] != "1" or not kw or kw in kb.PIXEL_MODULE_KEYWORDS or kw in kb.PROTECTED_UID_KEYWORDS:
+        if tag["type"] not in ("1", "1C") or not kw or kw in kb.PIXEL_MODULE_KEYWORDS or kw in kb.PROTECTED_UID_KEYWORDS:
             continue
         if kw in present:
             continue

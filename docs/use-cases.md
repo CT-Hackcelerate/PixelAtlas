@@ -1,157 +1,151 @@
-# Pixel Atlas Copilot Agent — Use Cases
+# Pixel Atlas — Use Cases
+
+What the tool must do from a user's perspective. See
+[solution-design.md](solution-design.md) for **how**, and
+[architecture.md](architecture.md) for components/deployment.
 
 ## 1. Purpose
 
-Test engineers, developers, and QA staff regularly need realistic-but-synthetic DICOM
-studies (specific modality, instance count, orientation, body part, patient
-demographics) to exercise PACS ingestion, viewers, and imaging pipelines. Today this
-is done manually with ad-hoc scripts and hand-edited sample files. This document
-defines the use cases for a **GitHub Copilot agent** ("Pixel Atlas Agent") that
-lets a user request test DICOM data in natural language inside VS Code, and have the
-agent plan the required tags, clone/modify a study — preferring similar data already
-in the PACS and falling back to a bundled template only when nothing similar exists
-— validate the result, and push it to a PACS (Orthanc in the reference environment).
-
-This document covers **what** the agent must do from a user's perspective. See
-[solution-design.md](solution-design.md) for **how** it does it, and
-[architecture.md](architecture.md) for the components and deployment.
+Test engineers, developers, and QA staff need realistic-but-synthetic DICOM
+studies (modality, instance count, orientation, body part, demographics) to
+exercise PACS ingestion, viewers, and imaging pipelines — without hand-editing
+sample files. Pixel Atlas lets a user ask in plain language inside an AI
+coding agent (Claude Code or Copilot Chat), and have the agent build valid
+files (grounded on a DICOM standard-derived Knowledge Base, not hand-authored
+templates) and load them into a test PACS (Orthanc).
 
 ## 2. Actors
 
 | Actor | Description |
 |---|---|
-| **Test/QA Engineer** (primary) | Requests synthetic studies to test viewers, PACS routing, worklist/HL7 flows, or automated pipelines. Has VS Code + Copilot but is not a DICOM expert. |
-| **Developer** (primary) | Needs quick sample data while building or debugging a DICOM-handling feature. Comfortable reading tag names. |
-| **Test Data Administrator** (secondary) | Curates the template catalog, reviews/approves new templates, owns the shared test-PACS instance. |
-| **CI Pipeline** (future, out of scope v1) | Would invoke the agent headlessly to seed a test PACS before automated regression runs. |
+| **Test/QA Engineer** (primary) | Requests synthetic studies to test viewers, PACS routing, worklist/HL7 flows, or automated pipelines. Not a DICOM expert. |
+| **Developer** (primary) | Needs quick sample data while building/debugging a DICOM-handling feature. |
+| **CI Pipeline** (future, out of scope) | Would invoke the tool headlessly to seed a test PACS before regression runs. |
 
-## 3. Glossary
+## 3. Use Case Catalog
 
-| Term | Meaning |
-|---|---|
-| **Tag template** | A per-modality/study-type specification (not a full DICOM file) describing *which* DICOM tags are required, their VR, and which are fixed/sequential/randomized/overridable. Used to plan tag values and to validate overrides — consulted on every request, regardless of where the seed data comes from. |
-| **Template seed data** | A small, anonymized, structurally-minimal sample `.dcm` file bundled with a tag template, used only as a **fallback** cloning source when no similar data exists in the PACS, and only after explicit user confirmation. |
-| **Similarity search** | The agent's PACS query (by modality/body part/orientation/SOP Class) to check whether data close enough to the request already exists, performed *before* considering the template seed fallback. |
-| **Generation job** | One invocation of the generate/modify pipeline, tracked by a job ID until it completes or fails. |
-| **PACS** | Picture Archiving and Communication System — Orthanc in the default dev setup, see [orthanc-setup.md](orthanc-setup.md). |
+| ID | Name | Command |
+|---|---|---|
+| UC-01 | Generate a new synthetic study | `/generate` (→ `generate_study`) |
+| UC-02 | Generate with tag overrides | `/generate` |
+| UC-03 | Modify or clone an existing PACS study | `/modify` (→ `modify_dataset`) |
+| UC-04 | Validate a dataset for DICOM conformance | `/validate` |
+| UC-05 | Check job or environment status | `/status` |
+| UC-06 | List cached recipes | `/list-recipes` |
+| UC-07 | Generic PACS feature lookup | `/check-feature` |
+| UC-08 | Multi-series studies (same study, multiple series) | `/generate` with `study_uid` |
+| UC-09 | PR/KO markup referencing existing instances | manual spec flow |
+| UC-10 (future) | Headless/CI-triggered generation | n/a |
 
-## 4. Use Case Catalog
+## 4. Detailed Use Cases
 
-| ID | Name | Primary Actor | Command |
-|---|---|---|---|
-| UC-01 | Generate a new synthetic study from a template | QA/Dev | `/generate` |
-| UC-02 | Generate with custom attributes/overrides | QA/Dev | `/generate` |
-| UC-03 | Modify or clone an existing PACS study | QA/Dev | `/modify` |
-| UC-04 | Validate a dataset for DICOM conformance | QA/Dev | `/validate` |
-| UC-05 | Check job or environment status | QA/Dev | `/status` |
-| UC-06 | List available tag templates / discover coverage | QA/Dev/Admin | `/list-templates` |
-| UC-07 | Handle a true coverage gap — no PACS match and no template (notify + suggest/contribute) | QA/Dev/Admin | `/generate` (fallback path) |
-| UC-08 | Bulk/multi-study generation for a test suite | QA/Dev | `/generate` (batch mode) |
-| UC-09 (future) | Headless/CI-triggered generation | CI Pipeline | n/a (Skillset API, see [architecture.md](architecture.md#9-extensibility--path-b-hosted-copilot-extension)) |
+### UC-01/02 — Generate a new synthetic study
 
-## 5. Detailed Use Cases
-
-### UC-01 — Generate a new synthetic study, preferring existing PACS data over templates
-
-- **Trigger:** User types e.g. *"Generate CT data with 200 axial instances"* in Copilot Chat.
-- **Preconditions:** DICOM MCP server running and registered; Orthanc reachable. A tag template for CT does **not** need to exist yet at this point — see alternate flows.
+- **Trigger:** *"Generate 200 axial CT instances"* or with overrides, *"...
+  PatientAge 34Y, manufacturer Siemens"*.
 - **Main flow:**
-  1. Agent parses intent → modality=CT, instance_count=200, orientation=axial.
-  2. Agent calls `get_template_info`/`list_templates` for CT to learn which tags are required/overridable for this modality (the tag template — see [solution-design.md §6](solution-design.md#6-template-system)). This does **not** yet decide where the seed data comes from.
-  3. Agent calls `resolve_seed(modality=CT, orientation=axial)` to check the PACS **first** for existing data similar enough to clone from.
-  4. **If similar data is found in the PACS** (the expected, preferred case): agent proceeds using that PACS study as the seed — see Alternate Flow A.
-  5. **If no similar data is found in the PACS:** agent explicitly tells the user and asks before falling back to the bundled template seed data — see Alternate Flow B.
-  6. Once a seed is resolved, agent confirms the plan with the user (modality, count, body part, seed source, target PACS) since count > 50.
-  7. User confirms.
-  8. Agent calls `generate_dataset(...)`, which clones the resolved seed, rewrites tags per the tag template, and generates new UIDs.
-  9. Agent calls `validate_dataset(...)` on the output.
-  10. Agent calls `store_to_pacs(...)`.
-  11. Agent reports: StudyInstanceUID, instance count stored, validation summary, seed source used, and an Orthanc link.
-- **Alternate Flow A — similar data found in PACS:** `resolve_seed` returns one or more candidate studies already in the PACS. If exactly one strong match, the agent uses it automatically (no extra confirmation beyond the standard count threshold in step 6 — using real, already-trusted PACS data is the preferred path, not a risky one). If multiple candidates match, the agent lists up to 5 and asks the user to pick one (or to use the template fallback instead).
-- **Alternate Flow B — no similar data in PACS, template available:** Agent states plainly that no similar data was found in the PACS for the requested criteria, and asks: *"Use the built-in CT template seed instead?"* Generation only proceeds using template seed data after the user explicitly confirms. See also [UC-07](#uc-07--handle-a-true-coverage-gap-no-pacs-match-and-no-template).
-- **Alternate Flow C — no similar data in PACS and no template exists either:** True coverage gap — see [UC-07](#uc-07--handle-a-true-coverage-gap-no-pacs-match-and-no-template).
-- **Postconditions:** A new, valid, conformant study exists in the PACS; nothing in the template catalog and no existing PACS study was modified (generation always writes a new study).
-- **Related MCP tools:** `resolve_seed`, `list_templates`, `get_template_info`, `list_pacs_studies`, `generate_dataset`, `validate_dataset`, `store_to_pacs`, `get_job_status`.
-
-### UC-02 — Generate with custom attributes/overrides
-
-- **Trigger:** *"Generate 50 MR sagittal instances, PatientAge 34Y, manufacturer Siemens, body part BRAIN."*
-- **Main flow:** Same as UC-01 (PACS-first seed resolution, then template-seed fallback with confirmation if needed), but the parsed plan includes explicit tag overrides that are validated against the tag template (is the tag allowed to be overridden? is the value type-correct for its VR?) before generation.
-- **Alternate flow:** If a requested override tag is not recognized or its value fails VR validation (e.g., a non-numeric `PatientAge`), the agent reports the specific tag/value problem instead of guessing, and asks for a corrected value.
-- **Postconditions:** Generated study reflects the resolved seed (PACS or template) plus the explicit overrides.
+  1. Agent resolves modality/count/body part/orientation from the request.
+  2. Agent calls `generate_study(modality, count, body_part?, orientation?,
+     enhanced?, overrides?, cine_rate?)` — the server builds a conformant
+     baseline itself (KB-grounded defaults + auto-fill); no template lookup,
+     no manual tag authoring.
+  3. Agent confirms with the user if count > 50 or cardinality is ambiguous
+     (e.g. "N instances" could mean N frames for a multi-frame ask).
+  4. Agent shows the compact summary (UIDs, count, validation, approx token
+     estimate), gets a **separate** confirmation, then calls
+     `store_to_pacs(confirm_store=True)`.
+- **Alternate flow (unsupported modality/type):** `generate_study` returns a
+  precise error (e.g. unsupported IOD family — SR/RT/SEG/encapsulated docs) —
+  the agent reports it and stops, never substitutes a different modality.
+- **Postconditions:** A new, valid, conformant study exists in the PACS;
+  nothing existing is modified.
 
 ### UC-03 — Modify or clone an existing PACS study
 
-- **Trigger:** *"Take study 1.2.3.4.5 from PACS and make a copy as an MR instead of CT, keep everything else."*
-- **Preconditions:** The source study exists in the configured PACS (found via `list_pacs_studies` or a supplied StudyInstanceUID).
+- **Trigger:** *"Change PatientAge on study 1.2.3.4.5, keep the original."*
 - **Main flow:**
-  1. Agent locates/fetches the source study.
-  2. Agent calls `modify_dataset(source, overrides, regenerate_uids=true)` — **default is non-destructive**: a new Study/Series/SOP UID set is generated so the original study is never mutated.
-  3. Agent validates and stores the derived study as a new PACS entry.
-  4. Agent reports the new StudyInstanceUID alongside the original one.
-- **Alternate flow (explicit in-place edit):** If the user explicitly asks to overwrite the existing study (`regenerate_uids=false`), the agent restates that this is destructive and requires an explicit confirmation before proceeding.
-- **Postconditions:** Either a new derived study exists (default) or the original study was overwritten (only on explicit confirmation).
+  1. Agent locates the source study (`list_pacs_studies` if not named directly).
+  2. Agent calls `modify_dataset(study_uid, overrides, regenerate_uids=true)`
+     — **default is non-destructive**: a new derived study is created.
+  3. Agent validates and stores the derived study.
+- **Alternate flow (explicit in-place edit):** User asks to overwrite in
+  place — agent confirms this is destructive and irreversible before calling
+  `modify_dataset(regenerate_uids=false, confirm_destructive=true)`.
+- **Postconditions:** Either a new derived study (default) or the original
+  overwritten (only on explicit confirmation).
 
 ### UC-04 — Validate a dataset for DICOM conformance
 
-- **Trigger:** *"Validate the study I just generated"* or *"/validate study=1.2.3.4.5"*.
-- **Main flow:**
-  1. Agent resolves the target (job output path, or StudyInstanceUID to pull from PACS).
-  2. Agent calls `validate_dataset(...)`.
-  3. Agent reports pass/fail per check category (IOD conformance, UID uniqueness, cross-instance consistency, pixel data integrity), with a bounded number of example errors, not a full per-instance dump.
-- **Postconditions:** No data is changed; a validation report is returned to the user.
+- **Trigger:** *"Validate the study I just generated"* or *"/validate study=..."*.
+- **Main flow:** Agent calls `validate_dataset(path?|study_uid?)` and reports
+  pass/fail per check category (IOD conformance, structural checks,
+  `dcmftest`) with a bounded number of example errors.
+- **Postconditions:** Read-only.
 
 ### UC-05 — Check job or environment status
 
-- **Trigger:** *"/status"*, *"/status job=abc123"*, or *"Is the MCP server and PACS up?"*
-- **Main flow:**
-  1. If a job ID is given, agent calls `get_job_status(job_id)` and reports state/progress.
-  2. If no job ID is given, agent runs an environment health check (MCP server reachable, DCMTK binaries found, PACS reachable) and reports a short status table.
-- **Postconditions:** Read-only; nothing is changed.
-
-### UC-06 — List available tag templates / discover coverage
-
-- **Trigger:** *"What templates do we have for MR?"* or *"/list-templates"*.
-- **Main flow:** Agent calls `list_templates(...)` with optional filters and returns a compact table (modality, body part, orientation, required-tag summary, whether fallback seed data is bundled). Long lists are paginated rather than dumped in full. This is a catalog browse — it does not query the PACS.
+- **Trigger:** *"/status"* or *"/status job=abc123"*.
+- **Main flow:** `get_job_status(job_id)` if a job ID is given, else
+  `health_check()` (MCP server, Orthanc, DCMTK binaries, KB edition).
 - **Postconditions:** Read-only.
 
-### UC-07 — Handle a true coverage gap (no PACS match and no template)
+### UC-06 — List cached recipes
 
-- **Trigger:** *"Generate 100 PET axial instances"* when the PACS has no PET data at all and no PET tag template exists in the catalog.
-- **Main flow:**
-  1. `resolve_seed(modality=PET, orientation=axial)` returns no PACS candidates.
-  2. `list_templates(modality=PET)` also returns empty.
-  3. Agent explicitly tells the user that neither existing PACS data nor a built-in template was found for the request (never silently substitutes a different modality).
-  4. Agent lists the closest available alternatives (e.g., existing CT/MR PACS data or templates, or a PET template with a different orientation) using catalog and PACS metadata.
-  5. Agent explains how to contribute a new tag template (see [solution-design.md §6.5](solution-design.md#65-adding-a-new-tag-template)) and offers to open a tracking note/issue if the user wants one filed.
-- **Postconditions:** No generation happens against a mismatched template or unrelated PACS data; the user has a clear next step.
+- **Trigger:** *"What have we generated before for MR?"* or *"/list-recipes"*.
+- **Main flow:** `list_recipes(modality?, body_part?, orientation?)` returns
+  cached, previously-validated Generation Specs. A recipe hit means the next
+  matching request skips planning and materializes directly.
+- **Postconditions:** Read-only. (Recipes auto-grow — there's no separate
+  "author a new recipe" step or coverage gap to fill; the KB covers every
+  supported IOD from the first request.)
 
-### UC-08 — Bulk/multi-study generation for a test suite
+### UC-07 — Generic PACS feature lookup
 
-- **Trigger:** *"Generate 5 CT studies and 3 MR studies for the regression suite."*
-- **Main flow:** Agent expands the request into a list of individual generation plans, confirms the full batch once (not per study), and executes each as an independent `generate_dataset` job so a single failure doesn't block the rest. A single consolidated summary table is returned at the end.
-- **Postconditions:** Multiple independent studies in PACS; a per-study status list (succeeded/failed) is reported.
+- **Trigger:** *"Do we have any CT study with a Modality LUT?"*
+- **Main flow:** Agent resolves the phrase to a DICOM keyword itself (no
+  built-in NL-to-tag mapping), then calls `check_pacs_feature(tag, value?,
+  modality?, date_range?)`.
+- **Postconditions:** Read-only.
 
-### UC-09 (Future) — Headless/CI-triggered generation
+### UC-08 — Multi-series studies
 
-- Out of scope for v1 (VS Code Agent Mode requires an interactive chat session). Documented as the motivating use case for the hosted Copilot Extension/Skillset extensibility path — see [architecture.md §9](architecture.md#9-extensibility--path-b-hosted-copilot-extension).
+- **Trigger:** *"Generate a CT series and an MR series in the same study."*
+- **Main flow:** Generate + store series 1, note its `study_uid`, then call
+  `generate_study(..., study_uid=<series 1's study_uid>)` for series 2 — it
+  pins to the same study and reuses PatientID/PatientName/StudyDate
+  automatically. Repeat per series.
+- **Postconditions:** One study, multiple series, consistent identity.
 
-## 6. Non-Functional Requirements
+### UC-09 — PR/KO markup referencing existing instances
+
+- **Trigger:** *"Add a presentation state marking up the CT I just stored."*
+- **Main flow:** `list_series_instances(study_uid, series_uid)` to get
+  concrete instance UIDs, author a spec with a `references` block naming
+  them, then `validate_spec` → `materialize_dataset`. Not a `generate_study`
+  case — PR/KO always point at data that must already exist.
+- **Postconditions:** A new PR or KO instance in the same study, referencing
+  the named instances.
+
+### UC-10 (Future) — Headless/CI-triggered generation
+
+- Out of scope today (requires an interactive agent chat session). Documented
+  as a future extensibility path only.
+
+## 5. Non-Functional Requirements
 
 | Requirement | Detail |
 |---|---|
-| **PACS-first sourcing** | The agent always checks the PACS for similar existing data before considering the bundled template seed data as a fallback, and never uses the fallback without explicit user confirmation. See [UC-01](#uc-01--generate-a-new-synthetic-study-preferring-existing-pacs-data-over-templates). |
-| **No real PHI, ever** | All generated/modified data must be synthetic. Template seed data checked into the repo must already be anonymized before being added to the catalog. |
-| **Non-destructive by default** | Cloning/modifying never overwrites the source PACS study, the source template, or an existing PACS study unless the user explicitly confirms an in-place edit. |
-| **Token economy** | Bulk operations (e.g., 200-instance loops) run as deterministic code inside a single MCP tool call, not as repeated LLM turns. See [solution-design.md §14](solution-design.md#14-token--cost-economy). |
-| **Conformance** | Every generated/modified study must pass IOD-level DICOM validation before being stored. |
-| **Predictable performance** | Generating 200 instances from an existing template should complete in low tens of seconds on a dev laptop, dominated by file I/O and `storescu`, not LLM latency. |
-| **Auditability** | Every generation/modify/store action is logged with job ID, requested plan, and outcome. |
-| **Idempotency** | Re-running a failed job with the same job ID resumes/retries rather than duplicating already-stored instances. |
+| **No real PHI, ever** | All generated/modified data is synthetic. |
+| **Non-destructive by default** | Generation always creates a new study; modify creates a derived study unless the user explicitly confirms an in-place overwrite. |
+| **Token economy** | One Generation Spec per study (O(1) in instance count); the Materializer expands to N files in a single deterministic tool call, not N LLM turns. |
+| **Conformance** | Every generated/modified study passes IOD-level DICOM validation (probe-first, then full sampled validation) before store. |
+| **Auditability** | Every tool call and every generated job is logged locally (spec + provenance + KB edition), at zero token cost. |
+| **No coverage gaps** | The KB covers every standard image IOD plus PR/KO from the first request — no "no template for this yet" dead end within that supported family. |
 
-## 7. Out of Scope (v1)
+## 6. Out of Scope
 
-- Clinically validated / diagnostic-quality pixel data — pixel data is either reused from the template or synthetically generated placeholder content, not medically meaningful.
-- Multi-tenant SaaS hosting, per-user auth beyond GitHub/Copilot identity.
-- Headless/CI invocation (UC-09) — documented as a future extensibility path only.
-- Automatic template authoring from arbitrary uploaded files without human review.
+- Clinically realistic pixel data — synthesized noise/gradient/phantom only.
+- Structured Reports (SR), RT objects, Segmentation (SEG), encapsulated
+  documents, Waveforms — the agent says "not supported," never substitutes.
+- PHI scrubbing — deferred; this is a test tool on test/synthetic data only.
+- Multi-tenant SaaS hosting, headless/CI invocation (UC-10).

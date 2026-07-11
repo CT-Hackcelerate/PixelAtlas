@@ -26,31 +26,20 @@ import uuid
 from pathlib import Path
 
 import pydicom
-from dicom_validator.spec_reader.edition_reader import EditionReader
 from dicom_validator.validator.dicom_file_validator import DicomFileValidator
 from dicom_validator.validator.error_handler import ValidationResultHandlerBase
 from dicom_validator.validator.validation_result import Status
 
 import config
+import iod_lookup
 import orthanc_client
-
-_dicom_info = None
 
 
 def _get_dicom_info():
-    """Lazily load (and cache in-process) the DICOM standard info dicom-validator needs.
-
-    First call per server process downloads/parses the standard (~40s); every
-    call after that, in this process or a later one thanks to dicom-validator's
-    own on-disk cache, is effectively free.
-    """
-    global _dicom_info
-    if _dicom_info is None:
-        edition_reader = EditionReader(str(config.DICOM_VALIDATOR_STANDARD_PATH))
-        edition = edition_reader.get_edition("current")
-        edition_reader.get_edition_path(edition, False)
-        _dicom_info = edition_reader.load_dicom_info(edition)
-    return _dicom_info
+    """Shared with the Knowledge Base (iod_lookup) so the ~40s standard-data load
+    happens at most once per process, whether triggered by validation or by a
+    KB lookup."""
+    return iod_lookup.get_dicom_info()
 
 
 def _select_sample(files: list[Path]) -> list[Path]:
@@ -81,7 +70,8 @@ def _structural_checks(files: list[Path]) -> tuple[list[str], list[str]]:
             errors.append(f"{f.name}: duplicate SOPInstanceUID {sop_uid}")
         sop_uids.add(sop_uid)
         instance_numbers.append(int(getattr(ds, "InstanceNumber", 0)))
-        if not getattr(ds, "PixelData", None):
+        # Reference objects (PR/KO) legitimately carry no pixel data.
+        if not iod_lookup.is_reference_object(str(getattr(ds, "SOPClassUID", ""))) and not getattr(ds, "PixelData", None):
             errors.append(f"{f.name}: missing PixelData")
 
     if len(study_uids) > 1:
@@ -138,6 +128,27 @@ def _iod_conformance_check(files: list[Path]) -> dict:
         "files_with_errors": len(per_file_errors),
         "example_errors": {name: msgs[:5] for name, msgs in list(per_file_errors.items())[:5]},
     }
+
+
+def iod_missing_tags(path: str) -> list[tuple[str, str, str]]:
+    """All IOD errors for the FIRST file in `path`, uncapped, as (module, tag_id,
+    code) — for server-side auto-repair (generate_study). Not returned to chat."""
+    files = sorted(Path(path).glob("*.dcm"))
+    if not files:
+        return []
+    try:
+        dicom_info = _get_dicom_info()
+    except Exception:
+        return []
+    validator = DicomFileValidator(dicom_info, error_handler=ValidationResultHandlerBase())
+    out: list[tuple[str, str, str]] = []
+    for _fp, result in validator.validate(files[0]).items():
+        if result.status != Status.Failed:
+            continue
+        for module_name, tag_errors in (result.module_errors or {}).items():
+            for tag_id, tag_error in tag_errors.items():
+                out.append((module_name, str(tag_id), tag_error.code.name))
+    return out
 
 
 def _materialize_study(study_uid: str) -> Path:

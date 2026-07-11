@@ -1,10 +1,12 @@
 ---
 description: Generate synthetic DICOM instances into the PACS
-mode: agent
-tools: ["pixel-atlas/resolve_seed", "pixel-atlas/generate_study", "pixel-atlas/validate_dataset", "pixel-atlas/store_to_pacs"]
+allowed-tools: mcp__pixel-atlas__resolve_seed, mcp__pixel-atlas__generate_study, mcp__pixel-atlas__validate_dataset, mcp__pixel-atlas__store_to_pacs
+argument-hint: modality=<CT|MR|US|...> count=<n> [body_part=] [orientation=] [enhanced=true] [cine_rate=<n>] [tag=value ...]
 ---
 
 # /generate modality=<CT|MR|US|...> count=<n> [body_part=] [orientation=] [enhanced=true] [cine_rate=<n>] [tag=value ...]
+
+$ARGUMENTS
 
 **Use the one-shot `generate_study` tool. This is a 2-call flow. Do NOT author a
 spec by hand, do NOT call `get_iod_requirements`, do NOT read any files.**

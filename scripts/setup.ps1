@@ -93,4 +93,4 @@ try {
     Pop-Location
 }
 
-Write-Host "`nSetup complete. Open this repo in VS Code, select the Pixel Atlas chat mode, and try /list-templates or /status." -ForegroundColor Cyan
+Write-Host "`nSetup complete. Open this repo in VS Code, select the Pixel Atlas chat mode, and try /list-recipes or /status." -ForegroundColor Cyan

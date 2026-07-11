@@ -61,15 +61,22 @@ You should see that the Linux environment is installed and ready to use.
 
 ## 4. Install Claude support
 
-Use the browser-based Claude experience rather than a local CLI install:
+This project is driven via **Claude Code** (the CLI / VS Code extension), not
+just the browser chat — it's what actually calls the Pixel Atlas MCP tools.
 
-1. Open your browser and go to https://claude.ai/.
-2. Sign in with CT account.
-3. If you want to use it from VS Code, install the Claude extension from the Extensions view and sign in there as well.
+1. Install the Claude Code extension from the VS Code Extensions view (or the
+   standalone CLI) and sign in.
+2. `.mcp.json` at the repo root registers the `pixel-atlas` MCP server for
+   Claude Code automatically — no extra config needed once it's running (see
+   [SETUP.md](SETUP.md)).
+3. The browser chat at https://claude.ai/ is still useful for ad hoc
+   questions, but it cannot call this project's MCP tools — use Claude Code
+   for anything that generates/modifies/validates DICOM data.
 
 ### Verify
-- Open https://claude.ai/ and confirm that you can sign in successfully.
-- In VS Code, open the Command Palette and confirm that Claude-related commands appear after the extension is installed.
+- In VS Code, open the Command Palette and confirm Claude Code commands appear.
+- Run `claude` (or open the extension) in the repo root and confirm it can see
+  the `pixel-atlas` MCP server (e.g. ask it to run `/status`).
 
 ## 5. Clone the repository
 

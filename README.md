@@ -3,16 +3,18 @@ Generate realistic, customizable DICOM test dataset for development, testing and
 
 ## How it works
 
-Two things split the work: the **Copilot agent** (the LLM, in VS Code chat)
-decides *what* to do and confirms risky steps with you; the **MCP server**
-(`mcp-server/`, plain Python) does the *how*, deterministically — no LLM
-involved once a tool is called.
+Two things split the work: the **AI coding agent** (Claude Code or Copilot
+Chat, in VS Code) decides *what* to do and confirms risky steps with you; the
+**MCP server** (`mcp-server/`, plain Python) does the *how*, deterministically
+— no LLM involved once a tool is called. See
+[docs/ai-driven-simple-overview.md](docs/ai-driven-simple-overview.md) for a
+plain-English walkthrough with diagrams and real token-cost numbers.
 
 ```mermaid
 flowchart TD
-    U["User prompt in Copilot Chat<br/>e.g. /generate modality=CT count=3"] --> A
+    U["User prompt in an AI coding agent<br/>(Claude Code or Copilot Chat)<br/>e.g. /generate modality=CT count=3"] --> A
 
-    subgraph Agent["Copilot Agent (LLM) — decides WHAT, asks before risky steps"]
+    subgraph Agent["AI Agent (LLM) — decides WHAT, asks before risky steps"]
         A["Parse intent → pick a tool + params<br/>(scoped by chatmode + prompt files, e.g. generate.prompt.md)"]
         A --> Cfm{"Risky step?<br/>(count &gt; 50, destructive overwrite,<br/>anything hitting the PACS)"}
         Cfm -- yes --> Ask["Ask user to confirm"] --> A

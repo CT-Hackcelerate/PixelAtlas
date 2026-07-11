@@ -1,10 +1,12 @@
 ---
 description: Modify tags on an existing PACS study
-mode: agent
-tools: ["pixel-atlas/list_pacs_studies", "pixel-atlas/get_iod_requirements", "pixel-atlas/describe_attributes", "pixel-atlas/modify_dataset", "pixel-atlas/validate_dataset", "pixel-atlas/store_to_pacs"]
+allowed-tools: mcp__pixel-atlas__list_pacs_studies, mcp__pixel-atlas__get_iod_requirements, mcp__pixel-atlas__describe_attributes, mcp__pixel-atlas__modify_dataset, mcp__pixel-atlas__validate_dataset, mcp__pixel-atlas__store_to_pacs
+argument-hint: study=<StudyInstanceUID> [tag=value ...] [regenerate_uids=true|false]
 ---
 
 # /modify study=<StudyInstanceUID> [tag=value ...] [regenerate_uids=true|false]
+
+$ARGUMENTS
 
 1. Resolve the source study. If `study=` wasn't given or isn't a UID, use
    `list_pacs_studies` to help the user find it (a direct, user-named lookup).

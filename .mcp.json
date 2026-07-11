@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "pixel-atlas": {
+      "command": ".venv/Scripts/python.exe",
+      "args": ["mcp-server/server.py"],
+      "env": {
+        "ORTHANC_URL": "http://localhost:8042",
+        "ORTHANC_USER": "orthanc",
+        "ORTHANC_PASSWORD": "orthanc"
+      }
+    }
+  }
+}

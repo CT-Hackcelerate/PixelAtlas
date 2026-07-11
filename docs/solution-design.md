@@ -71,7 +71,7 @@ Base + AI-authored JSON/XML spec → deterministic Materializer → `.dcm`.*
 
 | Term | Meaning |
 |---|---|
-| **DICOM Knowledge Base (KB)** | The reusable, standard-derived knowledge of every IOD: modules (M/C/U), and per tag its keyword, VR, VM, and Type (1/1C/2/2C/3). Built offline from `dicom-validator` standard data + pydicom dictionary; queried at runtime via MCP tools. Replaces per-template `iod_spec.yaml`. |
+| **DICOM Knowledge Base (KB)** | The reusable, standard-derived knowledge of every IOD: modules (M/C/U), and per tag its keyword, VR, VM, and Type (1/1C/2/2C/3). Built once from `dicom-validator` standard data + pydicom dictionary, **committed in-repo as plain JSON**; queried at runtime via MCP tools with no network/parse cost. Replaces per-template `iod_spec.yaml`. |
 | **DICOM Generation Spec (the IR)** | The JSON (or XML) document the AI produces: a small envelope carrying study/series-level **attributes** (in DICOM JSON Model form), **per-instance rules**, a **pixel directive**, an **identity policy**, and **provenance**. The single artifact the Materializer ingests. |
 | **DICOM JSON Model** | The DICOM-standard JSON encoding of a dataset (PS3.18 Annex F), e.g. `{"00100010": {"vr":"PN","Value":[{"Alphabetic":"DOE^JOHN"}]}}`. Loadable directly by `pydicom.Dataset.from_json`. The canonical body of the Generation Spec. |
 | **Native DICOM Model (XML)** | The standard XML encoding of the same dataset (PS3.19). Supported as an alternate serialization; JSON is canonical (see [§5.4](#54-xml-serialization)). |
@@ -84,7 +84,7 @@ Base + AI-authored JSON/XML spec → deterministic Materializer → `.dcm`.*
 ```mermaid
 sequenceDiagram
     actor User
-    participant Copilot as Copilot Chat<br/>(Agent Mode, GPT-4o)
+    participant Copilot as AI coding agent<br/>(Claude Code or Copilot Chat)
     participant KB as DICOM Knowledge Base<br/>(standard-derived)
     participant MCP as Pixel Atlas MCP Server
     participant PACS as Orthanc PACS
@@ -289,18 +289,23 @@ are out of scope for v1.
 
 The KB is the heart of "use AI for knowledge instead of relying on templates."
 
-- **Source:** built offline from `dicom-validator`'s standard-derived
-  IOD→module→tag tables (already loaded today by
-  [validator.py](../mcp-server/validator.py) for conformance checking) plus the
-  pydicom data dictionary (keyword ↔ tag ↔ VR ↔ VM). Optionally enriched with a
-  small curated notes file for conditions the standard expresses as free text.
+- **Source:** built once from `dicom-validator`'s standard-derived
+  IOD→module→tag tables plus the pydicom data dictionary (keyword ↔ tag ↔ VR ↔
+  VM), then **committed in-repo as plain JSON** (`mcp-server/kb/2026c/`) —
+  pinned to one DICOM standard edition, identical across every environment.
+  [validator.py](../mcp-server/validator.py) loads the same committed data for
+  conformance checking (`dicom-validator` remains a dependency for its
+  validation *engine*, just not for building/loading the KB).
 - **Coverage:** *every* SOP Class the standard defines — not a curated subset.
   This is what removes the per-modality authoring bottleneck.
 - **Shape:** for a given SOP Class, returns modules (M/C/U) and, for M/C modules,
-  each tag's keyword, VR, VM, Type, and any machine-readable condition.
-- **Runtime access:** pure lookups, no network, no per-request `dicom-validator`
-  parse (the standard data is cached once per process, as today). Exposed via the
-  MCP tools in [§7](#7-mcp-tool-surface-changes).
+  each tag's keyword, VR, VM, Type, and any machine-readable condition —
+  including `group_macros` for multi-frame functional groups, which the
+  Materializer walks generically to build the Shared/Per-Frame Functional
+  Groups structure for **any** modality (no per-modality Python).
+- **Runtime access:** pure lookups, no network, no parse delay — the KB JSON
+  loads from disk once per process. Exposed via the MCP tools in
+  [§7](#7-mcp-tool-surface-changes).
 - **Reuse:** one KB instance answers questions for all requests, all modalities,
   across the whole session. It is also what `validate_spec` and the Materializer's
   fill-in-the-blanks safety net consult — a single knowledge source, not three.
@@ -323,7 +328,7 @@ The conceptual changes:
 | `resolve_seed` | **Kept** | Still PACS-first; on a hit, the agent calls `extract_spec` instead of cloning a template seed. |
 | `modify_dataset` | **Reframed** | Becomes `extract_spec` → AI edits → `materialize_dataset`; the standalone tool is retained as a convenience wrapper. |
 | `validate_dataset`, `store_to_pacs`, `list_pacs_studies`, `check_pacs_feature`, `get_job_status`, `health_check` | **Unchanged** | Post-generation and PACS I/O are format-agnostic. |
-| `list_templates`, `get_template_info` | **Deprecated → `list_recipes`, `get_recipe`** | Repositioned over the emergent recipe cache ([§14](#14-recipe-cache-emergent-reuse)) instead of a hand-curated catalog. |
+| `list_templates`, `get_template_info` | **Deprecated → `list_recipes`, `find_recipe`** | Repositioned over the emergent recipe cache ([§14](#14-recipe-cache-emergent-reuse)) instead of a hand-curated catalog. |
 
 ## 8. Spec authoring by the AI
 
@@ -516,7 +521,7 @@ design:
 | Grounding/repair errors are **compact and specific** (`{tag, reason}`) | A repair turn edits a few fields, not the whole spec |
 | Repair loop (spec-grounding **and** probe) is **bounded** (e.g. ≤ 2 retries each), then fail-loud | No unbounded LLM back-and-forth |
 | **Recipe cache** short-circuits planning for repeat requests ([§14](#14-recipe-cache-emergent-reuse)) | Common requests cost ~0 planning tokens |
-| KB lookups return **compact structured data, cached per session**; the KB standard data is loaded once per process and kept warm (decision #10) | Grounding context fetched once, not re-inlined; no repeated `dicom-validator` warm-up |
+| KB lookups return **compact structured data, cached per session**; the committed KB JSON is loaded once per process and kept warm (decision #10) | Grounding context fetched once, not re-inlined; no repeated parse — the KB isn't even fetched over the network |
 | Pixel data + DICOM binaries **never enter the chat context**; the extended audit trail (decision #11) is written **server-side only**, never to chat | Zero token cost for richer auditing |
 
 Net: the common (recipe-hit or PACS-extract) path is *cheaper* than today; the
@@ -543,7 +548,7 @@ first-time estimate drops to roughly **~4–5k**.
 
 The recipe store *is* the successor to the template catalog, but it is
 **auto-grown from real successful generations** rather than hand-authored ahead
-of need. `list_recipes`/`get_recipe` browse it. Recipes are plain JSON specs, so
+of need. `list_recipes`/`find_recipe` browse it. Recipes are plain JSON specs, so
 they remain human-reviewable and PR-diffable (a curated recipe can still be
 committed deliberately, e.g. a canonical chest-CT protocol) — the difference is
 that authoring one is no longer a *prerequisite* for coverage.
@@ -566,7 +571,8 @@ that authoring one is no longer a *prerequisite* for coverage.
   spec (`spec_id` + content), its `provenance`, and the KB edition — so any output
   is reproducible and traceable. This is written server-side only (zero token cost).
 - **Boundary unchanged** — only NL prompts and the Generation Spec cross to the
-  Copilot/GPT-4o cloud; DICOM binaries and pixel data never do.
+  connected AI agent's cloud backend (Claude, or Copilot's GPT-4o); DICOM
+  binaries and pixel data never do.
 - **Conformance** — every materialized study passes `validate_dataset`
   (`dicom-validator` IOD conformance + structural checks) before store, exactly
   before every store.
@@ -581,8 +587,10 @@ working during transition are in
 ## 17. Open questions
 
 - **KB shape stability** — `dicom-validator`'s internal standard-data structures
-  are not a documented public API; pin the version and wrap access behind
-  `iod_lookup.py` so a schema change is contained.
+  are not a documented public API. Mitigated: the KB is committed (pinned
+  edition 2026c, `mcp-server/kb/`) and all access is wrapped behind
+  `iod_lookup.py`, so a future `dicom-validator` upgrade only affects the
+  one-time rebuild step, never a running deployment.
 - **Type 1C/2C conditions** are free text in the standard, not machine-checkable;
   the AI interprets them per request, and `validate_dataset` remains the backstop.
 - **Recipe cache invalidation** — when does a cached recipe become stale (KB
@@ -592,17 +600,21 @@ working during transition are in
 - **Clinical plausibility** — grounding + the §9 cross-tag rules guarantee
   *conformance and viewer-safety*, not that every AI-chosen value is clinically
   sensible; no independent check. Acceptable for synthetic test data.
-- **AI-authored sequences (decision #3)** — deeply-nested SQ (per-frame functional
-  groups on multi-frame IODs; PR/KO reference sequences) are the highest-risk
-  authoring target for repair-loop churn and token cost. Watch early testing; if a
-  particular IOD proves consistently hard, fall back to a Materializer-injected
-  curated sequence for it.
+- **AI-authored sequences (decision #3)** — deeply-nested SQ (per-frame
+  functional groups on multi-frame IODs; PR/KO reference sequences) were the
+  highest-risk authoring target for repair-loop churn and token cost.
+  **Resolved generically, not per-IOD:** the Materializer builds the mandatory
+  functional-group skeleton straight from the KB's `group_macros` (with a
+  small structured condition evaluator for Type-1C/2C tags) — the AI only
+  supplies leaf overrides. Verified end-to-end for Enhanced CT and Enhanced MR;
+  works for any future modality with no new Python.
 - **PHI scrubbing on productionization (decision #8)** — the deferred
   `extract_spec` scrubbing layer must be designed and signed off before any use
   against a PACS holding real PHI.
-- **KB warm-up/caching (decision #10)** — confirm the standard data loads once and
-  stays warm across `get_iod_requirements`/`validate_spec` calls in a session
-  (the ~40s first-load cost — confirmed once in the KB feasibility spike).
+- **KB warm-up/caching (decision #10)** — **Resolved:** the KB is committed
+  in-repo as plain JSON and loads from disk once per process (no network, no
+  parse delay) — the ~40s first-load cost from the original feasibility spike
+  no longer applies in any environment.
 
 ## 18. Multi-series studies & cross-series references
 

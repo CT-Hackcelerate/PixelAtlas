@@ -1,6 +1,5 @@
 mcp[cli]>=1.0.0
 pydicom>=2.4
-PyYAML>=6.0
 requests>=2.31
 numpy>=1.26
 dicom-validator>=0.8.2

@@ -1,10 +1,12 @@
 ---
 description: Check Pixel Atlas environment or job status
-mode: agent
-tools: ["pixel-atlas/health_check", "pixel-atlas/get_job_status"]
+allowed-tools: mcp__pixel-atlas__health_check, mcp__pixel-atlas__get_job_status
+argument-hint: "[job=<job_id>]"
 ---
 
 # /status [job=<job_id>]
+
+$ARGUMENTS
 
 If `job` is given, call `get_job_status` with that job_id and report its
 state, progress, and message.

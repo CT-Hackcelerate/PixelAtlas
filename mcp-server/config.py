@@ -3,8 +3,8 @@
 import os
 from pathlib import Path
 
-TEMPLATES_DIR = Path(os.environ.get("PIXEL_ATLAS_TEMPLATES", Path(__file__).parent.parent / "templates"))
 STAGING_DIR = Path(os.environ.get("PIXEL_ATLAS_STAGING", Path(__file__).parent.parent / "staging"))
+RECIPES_DIR = Path(os.environ.get("PIXEL_ATLAS_RECIPES", Path(__file__).parent.parent / "recipes"))
 LOG_DIR = Path(os.environ.get("PIXEL_ATLAS_LOG_DIR", Path(__file__).parent.parent / ".pixel-atlas" / "logs"))
 
 ORTHANC_URL = os.environ.get("ORTHANC_URL", "http://localhost:8042")
@@ -15,7 +15,8 @@ ORTHANC_DICOM_PORT = int(os.environ.get("ORTHANC_DICOM_PORT", "4242"))
 
 TEST_OID_ROOT = os.environ.get("PIXEL_ATLAS_OID_ROOT", "1.2.826.0.1.3680043.10.588")
 
-# dicom-validator caches the downloaded DICOM standard docbook/JSON here (its own
-# default is the same path) — kept as an explicit config value so it's overridable
-# like everything else in this file, not left to dicom-validator's internal default.
-DICOM_VALIDATOR_STANDARD_PATH = Path(os.environ.get("DICOM_VALIDATOR_STANDARD_PATH", str(Path.home() / "dicom-validator")))
+# The DICOM Knowledge Base is committed in-repo (mcp-server/kb/<edition>/) rather
+# than fetched over the network at runtime — pinned, reproducible, and available
+# offline. Rebuild it with scripts/build_kb.py if the pinned edition changes.
+KB_EDITION = os.environ.get("PIXEL_ATLAS_KB_EDITION", "2026c")
+KB_DIR = Path(os.environ.get("PIXEL_ATLAS_KB_DIR", str(Path(__file__).parent / "kb")))
