@@ -28,7 +28,7 @@ import orthanc_client
 import seed_builder
 import uid_strategy
 import validator
-from dicom_apply import apply_per_instance, apply_value_map
+from dicom_apply import apply_per_instance, apply_value_map, coerce_value
 from spec_store import SpecError
 
 SYNTHETIC_NAME_POOL = [
@@ -483,27 +483,35 @@ def _materialize_reference(spec, sop_class, job_id, staging_dir):
         ds.ContentTime = "120000"
 
     if kb.is_reference_object(sop_class) and modality == "PR":
-        ds.ReferencedSeriesSequence = _referenced_series_sequence(references)
-        ds.PresentationCreationDate = "20000101"
-        ds.PresentationCreationTime = "120000"
-        ds.ContentLabel = "PIXELATLAS_PR"
-        ds.ContentDescription = "Synthetic presentation state"
-        ds.PresentationLUTShape = "IDENTITY"
+        if "ReferencedSeriesSequence" not in attributes:
+            ds.ReferencedSeriesSequence = _referenced_series_sequence(references)
+        if "PresentationCreationDate" not in attributes:
+            ds.PresentationCreationDate = "20000101"
+        if "PresentationCreationTime" not in attributes:
+            ds.PresentationCreationTime = "120000"
+        if "ContentLabel" not in attributes:
+            ds.ContentLabel = "PIXELATLAS_PR"
+        if "ContentDescription" not in attributes:
+            ds.ContentDescription = "Synthetic presentation state"
+        if "PresentationLUTShape" not in attributes:
+            ds.PresentationLUTShape = "IDENTITY"
         # Softcopy VOI LUT (window/level)
-        win = (references.get("presentation") or {}).get("window", {"center": 40, "width": 400})
-        voi = pydicom.Dataset()
-        voi.ReferencedImageSequence = _flat_referenced_images(references)
-        voi.WindowCenter = str(win.get("center", 40))
-        voi.WindowWidth = str(win.get("width", 400))
-        ds.SoftcopyVOILUTSequence = pydicom.Sequence([voi])
+        if "SoftcopyVOILUTSequence" not in attributes:
+            win = (references.get("presentation") or {}).get("window", {"center": 40, "width": 400})
+            voi = pydicom.Dataset()
+            voi.ReferencedImageSequence = _flat_referenced_images(references)
+            voi.WindowCenter = str(win.get("center", 40))
+            voi.WindowWidth = str(win.get("width", 400))
+            ds.SoftcopyVOILUTSequence = pydicom.Sequence([voi])
         # Displayed area (full)
-        da = pydicom.Dataset()
-        da.ReferencedImageSequence = _flat_referenced_images(references)
-        da.DisplayedAreaTopLeftHandCorner = [1, 1]
-        da.DisplayedAreaBottomRightHandCorner = [512, 512]
-        da.PresentationSizeMode = "SCALE TO FIT"
-        da.PresentationPixelAspectRatio = [1, 1]
-        ds.DisplayedAreaSelectionSequence = pydicom.Sequence([da])
+        if "DisplayedAreaSelectionSequence" not in attributes:
+            da = pydicom.Dataset()
+            da.ReferencedImageSequence = _flat_referenced_images(references)
+            da.DisplayedAreaTopLeftHandCorner = [1, 1]
+            da.DisplayedAreaBottomRightHandCorner = [512, 512]
+            da.PresentationSizeMode = "SCALE TO FIT"
+            da.PresentationPixelAspectRatio = [1, 1]
+            ds.DisplayedAreaSelectionSequence = pydicom.Sequence([da])
 
         # Graphic Layer (optional, used if graphics are present)
         if "GraphicLayerSequence" in attributes or "GraphicAnnotationSequence" in attributes:
@@ -517,24 +525,7 @@ def _materialize_reference(spec, sop_class, job_id, staging_dir):
         if "GraphicAnnotationSequence" in attributes:
             gas_input = attributes.get("GraphicAnnotationSequence", [])
             if isinstance(gas_input, list) and gas_input:
-                gas = []
-                for ga_item in gas_input:
-                    ga = pydicom.Dataset()
-                    for key, value in ga_item.items():
-                        if key == "ReferencedImageSequence" and isinstance(value, list):
-                            ris = []
-                            for ri_item in value:
-                                ri = pydicom.Dataset()
-                                for k, v in ri_item.items():
-                                    setattr(ri, k, v)
-                                ris.append(ri)
-                            ga.ReferencedImageSequence = pydicom.Sequence(ris)
-                        elif key == "GraphicsData" and isinstance(value, list):
-                            ga.GraphicsData = value
-                        else:
-                            setattr(ga, key, value)
-                    gas.append(ga)
-                ds.GraphicAnnotationSequence = pydicom.Sequence(gas)
+                ds.GraphicAnnotationSequence = coerce_value(gas_input)
     else:  # KO
         ko = (references.get("keyObject") or {})
         title = ko.get("titleCode", {"value": "113000", "scheme": "DCM", "meaning": "Of Interest"})

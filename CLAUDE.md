@@ -43,6 +43,14 @@ per-instance expansion).
   multi-frame (enhanced/classic) SOP classes are inherently one instance per
   series (one file, N frames), so "N images" there usually means N frames,
   not N series — confirm this reading rather than assuming it.
+- **Ask before picking a seed source.** When `resolve_seed` returns
+  `source_type: "pacs"`, don't silently decide between the PACS candidate
+  (real pixel data) and a fresh IOD-authored spec (synthetic pixel data) —
+  even when a candidate looks like an imperfect match (e.g. body part is a
+  superset/mismatch of what was asked for). Tell the user what was found
+  (study description, real instance count, why it may or may not match) and
+  let them pick real-vs-synthetic before authoring further. This is cheap to
+  ask up front and irreversible-feeling to redo after the fact.
 
 ## Standard flow — generate a study
 
@@ -55,9 +63,11 @@ per-instance expansion).
    - **Miss** → step 2.
 2. Author the spec.
    - `resolve_seed(modality, body_part?, orientation?, enhanced?)`.
-   - `source_type: "pacs"` → `extract_spec(study_uid=<candidate>)` to get a
-     real, already-conformant spec to start from (preferred when available).
-     On this path the Materializer clones each instance's **real pixel
+   - `source_type: "pacs"` → before calling `extract_spec`, confirm with the
+     user which seed to use (see golden rule above) — real PACS candidate vs.
+     fresh IOD-authored synthetic spec. Once confirmed, `extract_spec
+     (study_uid=<candidate>)` gets a real, already-conformant spec to start
+     from. On this path the Materializer clones each instance's **real pixel
      data** from the source study — it never fabricates additional real
      images. Check `seedSource.sliceRange.count` (the real instance count)
      against the requested count before calling `materialize_dataset`: tell
