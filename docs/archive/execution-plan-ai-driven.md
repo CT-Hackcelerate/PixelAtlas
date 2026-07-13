@@ -4,8 +4,8 @@
 > (`templates/`, `generator.py`, `templates.py`, `generate_seed.py`) described
 > as "to retire" below has been removed; the KB is now committed in-repo
 > (`mcp-server/kb/`), not built at runtime. Kept for the design rationale, not
-> as a current-state reference — see [architecture.md](architecture.md) and
-> [solution-design.md](solution-design.md) for what's actually running today.
+> as a current-state reference — see [architecture.md](../architecture.md) and
+> [solution-design.md](../solution-design.md) for what's actually running today.
 
 > **This is one *proposed sequencing* of the full scope.** The complete,
 > phase-independent scope lives in
@@ -15,9 +15,9 @@
 >
 > Plain-language build plan for the AI-driven redesign. Read the three design docs
 > first if you want the detail:
-> [simple overview](ai-driven-simple-overview.md) ·
-> [solution design](solution-design.md) ·
-> [architecture](architecture.md) ·
+> [simple overview](../ai-driven-simple-overview.md) ·
+> [solution design](../solution-design.md) ·
+> [architecture](../architecture.md) ·
 > [what's changing](design-change-ai-driven.md).
 
 ## What we are building (in one paragraph)

@@ -1,12 +1,12 @@
 # Pixel Atlas — Design Change: Templates → AI-Driven Knowledge
 
 > **Status: implemented — historical record.** This is the change/migration document for the redesign in
-> [solution-design.md](solution-design.md) and
-> [architecture.md](architecture.md). It maps every delta
+> [solution-design.md](../solution-design.md) and
+> [architecture.md](../architecture.md). It maps every delta
 > against the *current* template-based design
 > (solution-design.md,
-> architecture.md, [use-cases.md](use-cases.md)) and the code
-> under [mcp-server/](../mcp-server/). Kept as a record of the migration, which is
+> architecture.md, [use-cases.md](../use-cases.md)) and the code
+> under [mcp-server/](../../mcp-server/). Kept as a record of the migration, which is
 > now complete.
 
 ## 1. Summary of the change
@@ -70,35 +70,35 @@ as the reusable knowledge, and (b) the recipe cache as emergent, reusable
 
 | Doc | Impact |
 |---|---|
-| [use-cases.md](use-cases.md) | UC-01/02/03 flows re-expressed as spec author/extract → materialize (same user experience). **UC-07 shrinks** from "coverage gap" to "invalid-request" handling — no PACS match no longer implies no generation. Glossary: "tag template"/"template seed data" → "Knowledge Base"/"Generation Spec"/"recipe." Non-functional requirements (PHI, non-destructive, token economy, conformance, idempotency) all carry over. |
-| solution-design.md | §1 principles revised ([new §2](solution-design.md#2-design-principles-revised)); §3 seed resolution keeps PACS-first but the fallback becomes KB-authoring not template-seed; §5 GenerationPlan → **Generation Spec** IR; **§6 Template System → §6 Knowledge Base + §5 IR + §14 Recipe cache**; §8 generation execution → **Materialization** (same machinery, spec-driven); §7 UID, §9 modify, §10 validation, §11 store, §13 status, §15 error handling, §16 security **largely unchanged**; §12 no-match → [no coverage gaps](solution-design.md#11-no-more-coverage-gaps). |
-| architecture.md | §2 components: Template Engine → **KB + Spec Validator + Materializer + Spec Extractor + Recipe Store**; §3 tool contract updated ([new §3](architecture.md#3-revised-mcp-tool-contract)); §5 deployment, §6 prerequisites **unchanged** (no new services/prereqs); §9 Path B unchanged and better-fit. |
+| [use-cases.md](../use-cases.md) | UC-01/02/03 flows re-expressed as spec author/extract → materialize (same user experience). **UC-07 shrinks** from "coverage gap" to "invalid-request" handling — no PACS match no longer implies no generation. Glossary: "tag template"/"template seed data" → "Knowledge Base"/"Generation Spec"/"recipe." Non-functional requirements (PHI, non-destructive, token economy, conformance, idempotency) all carry over. |
+| solution-design.md | §1 principles revised ([new §2](../solution-design.md#2-design-principles-revised)); §3 seed resolution keeps PACS-first but the fallback becomes KB-authoring not template-seed; §5 GenerationPlan → **Generation Spec** IR; **§6 Template System → §6 Knowledge Base + §5 IR + §14 Recipe cache**; §8 generation execution → **Materialization** (same machinery, spec-driven); §7 UID, §9 modify, §10 validation, §11 store, §13 status, §15 error handling, §16 security **largely unchanged**; §12 no-match → [no coverage gaps](../solution-design.md#11-no-more-coverage-gaps). |
+| architecture.md | §2 components: Template Engine → **KB + Spec Validator + Materializer + Spec Extractor + Recipe Store**; §3 tool contract updated ([new §3](../architecture.md#3-revised-mcp-tool-contract)); §5 deployment, §6 prerequisites **unchanged** (no new services/prereqs); §9 Path B unchanged and better-fit. |
 | The old build logs (implementation-status, execution-plan-phase4/phases1-3) | Deleted in the docs cleanup — this redesign realized what the superseded "Phase 4" plan had proposed (KB-driven generation), via an explicit JSON IR + Materializer + grounding loop. |
-| [README.md](README.md), [../README.md](../README.md) | Updated to point at the AI-driven docs. |
+| [docs/README.md](../README.md), [root README.md](../../README.md) | Updated to point at the AI-driven docs. |
 | [templates/README.md](../templates/README.md), [scripts/README.md](../scripts/README.md) | Reframed once templates are retired (see §6/§9). |
 
 ## 6. Impact on code (mcp-server/ and friends)
 
-Grounded in the actual files under [mcp-server/](../mcp-server/),
+Grounded in the actual files under [mcp-server/](../../mcp-server/),
 [templates/](../templates/), and [scripts/](../scripts/).
 
 | File | Change |
 |---|---|
-| [iod_lookup.py](../mcp-server/iod_lookup.py) | **Becomes the KB.** Expand from per-template `iod_spec.yaml` reads to standard-derived lookups across all SOP Classes; back `get_iod_requirements` + new `describe_attributes`. Single wrapper over `dicom-validator` standard data + pydicom dictionary. |
-| **`spec_validator.py`** (new) | Implements `validate_spec` — grounding vs KB + the curated **cross-tag consistency rules** (decision #1) + pixel-module-tag rejection (decision #2). Absorbs [override_policy.py](../mcp-server/override_policy.py)'s protected-tag logic, generalized from manifest-derived to KB-derived. On success stores the spec and returns a `spec_id` (decision #6). |
+| [iod_lookup.py](../../mcp-server/iod_lookup.py) | **Becomes the KB.** Expand from per-template `iod_spec.yaml` reads to standard-derived lookups across all SOP Classes; back `get_iod_requirements` + new `describe_attributes`. Single wrapper over `dicom-validator` standard data + pydicom dictionary. |
+| **`spec_validator.py`** (new) | Implements `validate_spec` — grounding vs KB + the curated **cross-tag consistency rules** (decision #1) + pixel-module-tag rejection (decision #2). Absorbs [override_policy.py](../../mcp-server/override_policy.py)'s protected-tag logic, generalized from manifest-derived to KB-derived. On success stores the spec and returns a `spec_id` (decision #6). |
 | **`spec_store.py`** (new) | Server-side store of validated specs keyed by `spec_id` (decision #6) so specs aren't re-sent between tools; supports diff-apply for repairs. |
-| **`materializer.py`** (new) | Implements `materialize_dataset` — takes a `spec_id` → `.dcm`. Largely a refactor of [generator.py](../mcp-server/generator.py): reuse UID assignment, override application, `strict_value_validation`, staging output, job-registry updates, and `_fill_missing_iod_tags`. Adds **probe-first** validation (decision #5), **multi-frame/PR/KO** branches (decision #4), and **preserves source pixels on the PACS path** (decision #2). |
-| **`spec_extractor.py`** (new) | Implements `extract_spec` — fetch a study via [orthanc_client.py](../mcp-server/orthanc_client.py), emit DICOM JSON Model. **No PHI scrubbing for now** (decision #8) — identity/pixels preserved as-is. |
-| [seed_builder.py](../mcp-server/seed_builder.py) | **Generalize** its pixel synthesis to be fully modality-agnostic (driven by the spec's `pixel` directive); it becomes the Image Pixel module synthesizer for the `iod`-seed path **only** (decision #2). Its `build_minimal_seed` becomes the base-dataset builder. |
-| [generator.py](../mcp-server/generator.py) | Superseded by `materializer.py`; kept during migration for the template path (§9), then retired. |
-| [seed_resolver.py](../mcp-server/seed_resolver.py) | Simplify `resolve_seed` outcomes to `pacs` / `iod` (drop `template`/`none` coverage-gap branch). |
-| [modify.py](../mcp-server/modify.py) | Reframe over `extract_spec` → overrides → `materialize_dataset`; keep the `confirm_destructive` gate and `regenerate_uids` semantics. |
-| **`recipe_store.py`** (new) | Cache/browse validated specs; back `list_recipes`/`get_recipe`. Replaces [templates.py](../mcp-server/templates.py). |
-| [templates.py](../mcp-server/templates.py) | Retired once `recipe_store.py` reaches parity; `list_templates`/`get_template_info` deprecated → `list_recipes`/`get_recipe`. |
-| [validator.py](../mcp-server/validator.py) | **Unchanged** (already the right post-generation gate; already loads the standard data the KB will share). |
-| [audit_log.py](../mcp-server/audit_log.py) | **Extended** (decision #11) — record full spec + provenance + KB edition per job. Server-side only, zero token cost. |
-| [uid_strategy.py](../mcp-server/uid_strategy.py), [pacs_store.py](../mcp-server/pacs_store.py), [feature_lookup.py](../mcp-server/feature_lookup.py), [orthanc_client.py](../mcp-server/orthanc_client.py), [job_registry.py](../mcp-server/job_registry.py), [config.py](../mcp-server/config.py) | **Unchanged.** |
-| [server.py](../mcp-server/server.py) | Register new tools (`describe_attributes`, `validate_spec`, `materialize_dataset`, `extract_spec`, `list_recipes`, `get_recipe`); keep old tools during migration behind a deprecation notice. |
+| **`materializer.py`** (new) | Implements `materialize_dataset` — takes a `spec_id` → `.dcm`. Largely a refactor of [generator.py](../../mcp-server/generator.py): reuse UID assignment, override application, `strict_value_validation`, staging output, job-registry updates, and `_fill_missing_iod_tags`. Adds **probe-first** validation (decision #5), **multi-frame/PR/KO** branches (decision #4), and **preserves source pixels on the PACS path** (decision #2). |
+| **`spec_extractor.py`** (new) | Implements `extract_spec` — fetch a study via [orthanc_client.py](../../mcp-server/orthanc_client.py), emit DICOM JSON Model. **No PHI scrubbing for now** (decision #8) — identity/pixels preserved as-is. |
+| [seed_builder.py](../../mcp-server/seed_builder.py) | **Generalize** its pixel synthesis to be fully modality-agnostic (driven by the spec's `pixel` directive); it becomes the Image Pixel module synthesizer for the `iod`-seed path **only** (decision #2). Its `build_minimal_seed` becomes the base-dataset builder. |
+| [generator.py](../../mcp-server/generator.py) | Superseded by `materializer.py`; kept during migration for the template path (§9), then retired. |
+| [seed_resolver.py](../../mcp-server/seed_resolver.py) | Simplify `resolve_seed` outcomes to `pacs` / `iod` (drop `template`/`none` coverage-gap branch). |
+| [modify.py](../../mcp-server/modify.py) | Reframe over `extract_spec` → overrides → `materialize_dataset`; keep the `confirm_destructive` gate and `regenerate_uids` semantics. |
+| **`recipe_store.py`** (new) | Cache/browse validated specs; back `list_recipes`/`get_recipe`. Replaces [templates.py](../../mcp-server/templates.py). |
+| [templates.py](../../mcp-server/templates.py) | Retired once `recipe_store.py` reaches parity; `list_templates`/`get_template_info` deprecated → `list_recipes`/`get_recipe`. |
+| [validator.py](../../mcp-server/validator.py) | **Unchanged** (already the right post-generation gate; already loads the standard data the KB will share). |
+| [audit_log.py](../../mcp-server/audit_log.py) | **Extended** (decision #11) — record full spec + provenance + KB edition per job. Server-side only, zero token cost. |
+| [uid_strategy.py](../../mcp-server/uid_strategy.py), [pacs_store.py](../../mcp-server/pacs_store.py), [feature_lookup.py](../../mcp-server/feature_lookup.py), [orthanc_client.py](../../mcp-server/orthanc_client.py), [job_registry.py](../../mcp-server/job_registry.py), [config.py](../../mcp-server/config.py) | **Unchanged.** |
+| [server.py](../../mcp-server/server.py) | Register new tools (`describe_attributes`, `validate_spec`, `materialize_dataset`, `extract_spec`, `list_recipes`, `get_recipe`); keep old tools during migration behind a deprecation notice. |
 | [scripts/generate_iod_spec.py](../scripts/generate_iod_spec.py) | Repurposed to **build the KB** (one artifact) instead of per-template `iod_spec.yaml`. |
 | [scripts/generate_seed.py](../scripts/generate_seed.py) | Retired — pixel data is synthesized at materialization from the `pixel` directive, not pre-generated per template. |
 | [templates/](../templates/) (`CT/ct-image`, `MR/mr-image`, `US/us-image`, `MG/mg-image`, `catalog.yaml`) | Retired as a *prerequisite*; any still-valuable ones can be re-committed as curated **recipes**. |
@@ -190,7 +190,7 @@ decisions plus the 11-point pre-implementation review):
   `resolve_seed` queries only indexed `ModalitiesInStudy` server-side and matches
   `body_part`/`orientation` as `StudyDescription` substrings; **no per-instance tag
   scanning**. See
-  [solution-design.md §4.1](solution-design.md#41-seed-matching-criteria-kept-lightweight).
+  [solution-design.md §4.1](../solution-design.md#41-seed-matching-criteria-kept-lightweight).
 - **KB edition policy → pin one edition for now**; recipes versioned by edition,
   re-validated/dropped only on a deliberate future bump.
 - **IR format → JSON canonical (DICOM JSON Model), XML alternate.**

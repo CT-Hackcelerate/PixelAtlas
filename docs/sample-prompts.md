@@ -7,13 +7,18 @@ the agent should map them to the right tool calls itself. See
 
 ## 1. Generate
 
-Expected: `generate_study` → (confirmation) → `store_to_pacs(confirm_store=True)`.
+Expected: `find_recipe` (miss on the first run) → `resolve_seed` →
+`get_iod_requirements`/`describe_attributes` → agent authors the spec →
+`validate_spec` → `materialize_dataset` → (confirmation) →
+`store_to_pacs(confirm_store=True)`.
 
 ```
 Generate 3 axial CT chest instances
 ```
-Expect: one call to `generate_study(modality="CT", count=3, ...)`, a compact
-summary (UIDs, count, validation), a confirmation before `store_to_pacs`.
+Expect: `find_recipe(modality="CT", body_part="CHEST", orientation="AXIAL")`,
+then on a miss the agent authors a spec with `request.instanceCount=3` and
+runs `validate_spec` → `materialize_dataset`; a compact summary (UIDs, count,
+validation), a confirmation before `store_to_pacs`.
 
 ```
 Generate 200 axial CT chest scans for load testing
@@ -24,29 +29,28 @@ usual store confirmation — two distinct confirmations.
 ```
 Generate 5 CT chest instances with PatientSex=F and PatientAge=062Y
 ```
-Expect: passed through as `overrides={"PatientSex": "F", "PatientAge": "062Y"}`.
+Expect: `PatientSex`/`PatientAge` set directly in the spec's `attributes`.
 
 ```
 Generate 2 CT instances and set the SOPInstanceUID to 12345
 ```
-Expect: rejected before calling any tool — `SOPInstanceUID` is a
-server-generated identifier, never user-settable. The agent should explain
-why, not silently drop the override.
+Expect: rejected before calling `validate_spec` (or rejected by it) —
+`SOPInstanceUID` is a server-generated identifier, never user-settable. The
+agent should explain why, not silently drop the request.
 
 ```
 Generate multi-frame US with 60 frames at 30fps
 ```
-Expect: `generate_study(modality="US", count=60, enhanced=true, cine_rate=30)`
-— `count` means frames here, not series, since one multi-frame file is one
-instance.
+Expect: a spec with `modality="US"`, `enhanced=true`, `request.instanceCount=60`
+(frames, not series, since one multi-frame file is one instance), and
+`attributes` set to `{"CineRate": "30", "FrameTime": "33.333"}`.
 
-## 2. Priors (advanced flow)
+## 2. Priors
 
 Generating a study that reads as an earlier scan of the same synthetic
-patient. Not a `generate_study` parameter — this goes through the manual
-spec flow (`request.priorOfStudyUID`/`daysBefore` on the Generation Spec) via
-`validate_spec` → `materialize_dataset`. You need a `study_uid` already in the
-PACS first (generate one via §1).
+patient. Goes through the spec flow (`request.priorOfStudyUID`/`daysBefore`
+on the Generation Spec) via `validate_spec` → `materialize_dataset`. You need
+a `study_uid` already in the PACS first (generate one via §1).
 
 ```
 Generate a prior CT for the same patient as study <study_uid>, 90 days earlier

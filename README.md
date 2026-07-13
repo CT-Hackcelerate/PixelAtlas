@@ -80,9 +80,11 @@ User: "100 axial CT instances"
   ↓
 Claude Code (via MCP)
   ↓
-generate_study(modality="CT", count=100, orientation="axial")
+find_recipe → (hit: reuse spec) or (miss: author spec, grounded on the KB)
   ↓
-[MCP server: validate spec, synthesize pixels, assign UIDs, save .dcm files]
+validate_spec(spec) → materialize_dataset(spec_id, instance_count=100)
+  ↓
+[MCP server: synthesize pixels, assign UIDs, save .dcm files]
   ↓
 validate_dataset [IOD conformance check]
   ↓

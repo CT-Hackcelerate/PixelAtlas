@@ -6,7 +6,7 @@ being re-sent as a tool argument — the token-economy "handle" pattern.
 
 In-memory only (like job_registry) — lost on server restart, acceptable for the
 local dev tool. The Generation Spec shape is documented in
-docs/ai-driven-comprehensive-plan.md §6.
+docs/solution-design.md §5.
 """
 
 import uuid

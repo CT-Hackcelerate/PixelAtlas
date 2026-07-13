@@ -4,9 +4,9 @@
 > Phasing/sequencing is decided separately (a suggested ordering lives in
 > [execution-plan-ai-driven.md](execution-plan-ai-driven.md)). Rationale and detail
 > live in the design docs:
-> [simple overview](ai-driven-simple-overview.md) ·
-> [solution design](solution-design.md) ·
-> [architecture](architecture.md) ·
+> [simple overview](../ai-driven-simple-overview.md) ·
+> [solution design](../solution-design.md) ·
+> [architecture](../architecture.md) ·
 > [what's changing](design-change-ai-driven.md).
 >
 > Written in plain language on purpose. Every work item is a checkbox so it can be

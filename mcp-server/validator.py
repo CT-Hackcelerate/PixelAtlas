@@ -23,6 +23,7 @@ import random
 import shutil
 import subprocess
 import uuid
+from collections import defaultdict
 from pathlib import Path
 
 import pydicom
@@ -54,8 +55,15 @@ def _select_sample(files: list[Path]) -> list[Path]:
 
 
 def _structural_checks(files: list[Path]) -> tuple[list[str], list[str]]:
+    """A file set is one study, but legitimately many series (multi-series
+    studies from modify_dataset/generate_prior_study, or a multi-series
+    generation via request.attachStudyUID) — so StudyInstanceUID must be
+    identical across every file, but SeriesInstanceUID varying is normal and
+    InstanceNumber only needs to increase *within* each series, not globally
+    across series boundaries."""
     errors: list[str] = []
-    study_uids, series_uids, sop_uids, instance_numbers = set(), set(), set(), []
+    study_uids, sop_uids = set(), set()
+    by_series: dict[str, list[tuple[int, str]]] = defaultdict(list)
 
     for f in files:
         try:
@@ -64,22 +72,23 @@ def _structural_checks(files: list[Path]) -> tuple[list[str], list[str]]:
             errors.append(f"{f.name}: failed to read ({exc})")
             continue
         study_uids.add(getattr(ds, "StudyInstanceUID", None))
-        series_uids.add(getattr(ds, "SeriesInstanceUID", None))
+        series_uid = getattr(ds, "SeriesInstanceUID", None)
         sop_uid = getattr(ds, "SOPInstanceUID", None)
         if sop_uid in sop_uids:
             errors.append(f"{f.name}: duplicate SOPInstanceUID {sop_uid}")
         sop_uids.add(sop_uid)
-        instance_numbers.append(int(getattr(ds, "InstanceNumber", 0)))
+        by_series[series_uid].append((int(getattr(ds, "InstanceNumber", 0)), f.name))
         # Reference objects (PR/KO) legitimately carry no pixel data.
         if not iod_lookup.is_reference_object(str(getattr(ds, "SOPClassUID", ""))) and not getattr(ds, "PixelData", None):
             errors.append(f"{f.name}: missing PixelData")
 
     if len(study_uids) > 1:
         errors.append(f"StudyInstanceUID not identical across instances: {study_uids}")
-    if len(series_uids) > 1:
-        errors.append(f"SeriesInstanceUID not identical across instances: {series_uids}")
-    if instance_numbers != sorted(instance_numbers):
-        errors.append("InstanceNumber is not strictly increasing across the file set")
+
+    for series_uid, entries in by_series.items():
+        numbers = [n for n, _ in entries]
+        if numbers != sorted(numbers):
+            errors.append(f"InstanceNumber is not strictly increasing within series {series_uid}: {numbers}")
 
     warnings: list[str] = []
     return errors, warnings
@@ -128,27 +137,6 @@ def _iod_conformance_check(files: list[Path]) -> dict:
         "files_with_errors": len(per_file_errors),
         "example_errors": {name: msgs[:5] for name, msgs in list(per_file_errors.items())[:5]},
     }
-
-
-def iod_missing_tags(path: str) -> list[tuple[str, str, str]]:
-    """All IOD errors for the FIRST file in `path`, uncapped, as (module, tag_id,
-    code) — for server-side auto-repair (generate_study). Not returned to chat."""
-    files = sorted(Path(path).glob("*.dcm"))
-    if not files:
-        return []
-    try:
-        dicom_info = _get_dicom_info()
-    except Exception:
-        return []
-    validator = DicomFileValidator(dicom_info, error_handler=ValidationResultHandlerBase())
-    out: list[tuple[str, str, str]] = []
-    for _fp, result in validator.validate(files[0]).items():
-        if result.status != Status.Failed:
-            continue
-        for module_name, tag_errors in (result.module_errors or {}).items():
-            for tag_id, tag_error in tag_errors.items():
-                out.append((module_name, str(tag_id), tag_error.code.name))
-    return out
 
 
 def _materialize_study(study_uid: str) -> Path:

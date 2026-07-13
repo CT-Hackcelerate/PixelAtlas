@@ -6,6 +6,24 @@ Complete installation and configuration for Pixel Atlas (one-stop guide).
 
 - Windows 11 with admin access
 - ~20 GB disk space (for Docker + Orthanc data)
+- Python 3.11+ (`winget install Python.Python.3.11`)
+
+---
+
+## Fastest path: `scripts/setup.ps1`
+
+Once Docker Desktop, Git, and VS Code are installed (Parts 1-2 below),
+`scripts/setup.ps1` automates the rest of this guide (Orthanc container,
+`.venv` + `mcp-server` dependencies, DCMTK check, `health_check`
+verification):
+
+```powershell
+cd C:\dev\PixelAtlas
+.\scripts\setup.ps1
+```
+
+See [scripts/README.md](../scripts/README.md) for what it covers. The manual
+steps below are for troubleshooting or understanding what the script does.
 
 ---
 
@@ -121,41 +139,49 @@ Open http://localhost:8042 in your browser.
 
 ## Part 5: MCP Server Setup
 
-### 5.1 Install Python dependencies
+### 5.1 Create the venv and install dependencies
+
+```powershell
+cd C:\dev\PixelAtlas
+python -m venv .venv
+.\.venv\Scripts\pip.exe install -r mcp-server\requirements.txt
+```
+
+(`scripts/setup.ps1` does this step for you and is idempotent if `.venv`
+already exists.)
+
+### 5.2 Verify the MCP server starts
 
 ```powershell
 cd C:\dev\PixelAtlas\mcp-server
-pip install -r requirements.txt
+..\.venv\Scripts\python.exe -c "import server, json; print(json.dumps(server.health_check()))"
 ```
 
-### 5.2 Verify MCP server starts
-
-```powershell
-python server.py
-```
-
-You should see:
-```
-MCP server started...
-```
-
-Press `Ctrl+C` to stop. It will start automatically when Claude connects.
+You should see a JSON result with `"orthanc_reachable": true`. This runs the
+server's `health_check` directly, without going through VS Code — useful for
+isolating whether a problem is in the Python environment/Orthanc connection
+vs. the MCP client wiring in Part 6.
 
 ---
 
-## Part 6: Configure Claude Code
+## Part 6: Configure Claude Code / Copilot Agent Mode
 
 ### 6.1 Open MCP Settings
 
-In VS Code, open `.vscode/mcp.json` and verify:
+In VS Code, open `.vscode/mcp.json` and verify it matches (paths are
+workspace-relative via `${workspaceFolder}`, so this normally needs no
+edits unless your Orthanc instance uses different host/port/credentials):
 
 ```json
 {
-  "mcpServers": {
+  "servers": {
     "pixel-atlas": {
-      "command": "python",
-      "args": ["c:\\dev\\PixelAtlas\\mcp-server\\server.py"],
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["${workspaceFolder}/mcp-server/server.py"],
       "env": {
+        "PIXEL_ATLAS_RECIPES": "${workspaceFolder}/recipes",
+        "PIXEL_ATLAS_STAGING": "${workspaceFolder}/staging",
+        "PIXEL_ATLAS_LOG_DIR": "${workspaceFolder}/.pixel-atlas/logs",
         "ORTHANC_URL": "http://localhost:8042",
         "ORTHANC_USER": "orthanc",
         "ORTHANC_PASSWORD": "orthanc"
@@ -165,19 +191,54 @@ In VS Code, open `.vscode/mcp.json` and verify:
 }
 ```
 
-Update paths if your repo is in a different location.
+There is also a repo-root `.mcp.json` (same server, relative paths, no
+`PIXEL_ATLAS_*` overrides) used by Claude Code outside of VS Code's own MCP
+integration — keep both in sync if you change the Orthanc connection details.
 
 ### 6.2 Test MCP connection
 
-Open Claude Code in VS Code and try:
+Open Claude Code (or Copilot Agent Mode) in VS Code and try:
 
 ```
-/health_check
+health_check()
 ```
 
 You should see:
 - MCP server: ok
 - Orthanc reachable: true
+
+---
+
+## Restarting the MCP server
+
+VS Code spawns `mcp-server/server.py` as a subprocess when the window loads
+and keeps it running for the life of that window — it does **not** hot-reload
+when you edit server-side Python (`mcp-server/*.py`). Restart after any
+change there, or if the server seems stuck/unresponsive:
+
+**Preferred — reload the VS Code window:**
+1. Command Palette (`Ctrl+Shift+P`) → **Developer: Reload Window** (or, if
+   available in your Copilot/Claude Code version, **MCP: List Servers** →
+   select `pixel-atlas` → **Restart**).
+2. VS Code respawns the server process on reload; the next tool call will use
+   the updated code.
+
+**Fallback — kill the process directly** (if a reload doesn't pick up the
+change, or the window is unresponsive):
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Where-Object { $_.CommandLine -like '*mcp-server*server.py*' } |
+  Select-Object ProcessId, CommandLine
+```
+Confirm which PID(s) belong to the session you mean to restart (multiple
+windows/workspaces each spawn their own copy — killing all of them will
+restart every open session's server, not just yours), then:
+```powershell
+Stop-Process -Id <pid> -Force
+```
+The host reconnects and relaunches the server automatically on the next MCP
+tool call. There's no "restart" RPC to call from inside a chat session —
+this process-level restart (or a window reload) is the only way.
 
 ---
 
@@ -195,9 +256,13 @@ docker rm orthanc
 ```
 
 ### MCP server won't connect
-- Ensure Python 3.10+ is installed: `python --version`
-- Check `requirements.txt` packages are installed: `pip list`
-- Verify `.vscode/mcp.json` has correct paths (use absolute paths)
+- Ensure Python 3.11+ is installed: `python --version`
+- Check `mcp-server/requirements.txt` packages are installed in `.venv`:
+  `.\.venv\Scripts\pip.exe list`
+- Verify `.vscode/mcp.json` / `.mcp.json` point at `.venv\Scripts\python.exe`
+  (not a bare `python`, which may resolve to a different interpreter)
+- If you edited server code or `mcp.json` and nothing changed, restart the
+  server — see [Restarting the MCP server](#restarting-the-mcp-server) above
 
 ### Can't connect to Orthanc
 - Verify Docker is running: `docker ps`
@@ -206,14 +271,12 @@ docker rm orthanc
 
 ### ImportError when starting MCP server
 ```powershell
-# Reinstall dependencies
-pip install --upgrade -r requirements.txt
-
-# If using a venv, activate it first
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+# Reinstall dependencies into the project .venv (create it first if missing)
+python -m venv .venv
+.\.venv\Scripts\pip.exe install --upgrade -r mcp-server\requirements.txt
 ```
+Then restart the MCP server (see above) so it picks up the reinstalled
+packages.
 
 ---
 
@@ -223,7 +286,7 @@ After all steps are complete:
 
 1. Open VS Code
 2. Open Claude Code
-3. Try: `generate_study(modality="CT", count=3)`
+3. Try: "Generate 3 CT instances"
 4. Confirm and store to PACS
 5. Visit http://localhost:8042 and verify the study appears
 
@@ -234,3 +297,4 @@ After all steps are complete:
 - Read [QUICKSTART.md](QUICKSTART.md) for common workflows
 - See [solution-design.md](solution-design.md) for how the system works
 - Check [sample-prompts.md](sample-prompts.md) for example requests
+- See [scripts/README.md](../scripts/README.md) for what `setup.ps1` automates

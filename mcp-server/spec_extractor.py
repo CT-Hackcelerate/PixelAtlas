@@ -69,9 +69,29 @@ def extract_spec(study_uid: str | None = None, path: str | None = None) -> dict:
         instance_ids = orthanc_client.list_instance_ids(study_uid)
         if not instance_ids:
             raise SpecError(f"Study '{study_uid}' has no instances in the PACS")
+        # extract_spec builds a spec from ONE representative instance (+ a single
+        # merged slice geometry) — structurally single-series. A genuinely
+        # multi-series source (a multi-series CT/MR, or a US study with several
+        # multi-frame instances, each its own series) would silently interleave
+        # unrelated series' geometry into one nonsensical range, or collapse a
+        # source series count into an unrelated frame count. Refuse loud instead:
+        # /modify and generate_prior_study already replicate every series faithfully.
+        series_uids = {inst["series_uid"] for inst in orthanc_client.list_series_instances(study_uid)}
+        if len(series_uids) > 1:
+            raise SpecError(
+                f"Study '{study_uid}' has {len(series_uids)} series — extract_spec only "
+                "supports single-series sources (it builds a spec from one representative "
+                "instance). Use modify_dataset to edit tags, or generate_prior_study for a "
+                "prior — both replicate every series of the source study faithfully."
+            )
         ds = pydicom.dcmread(io.BytesIO(orthanc_client.fetch_instance_bytes(instance_ids[0])))
         count = len(instance_ids)
         seed = {"type": "pacs", "studyUID": study_uid}
+        if count > 1:
+            geometry = orthanc_client.list_instance_geometry(study_uid)
+            if len(geometry) > 1:
+                locations = [g["slice_location"] for g in geometry]
+                seed["sliceRange"] = {"start": locations[0], "end": locations[-1], "count": len(locations)}
     elif path:
         ds = pydicom.dcmread(path)
         count = 1

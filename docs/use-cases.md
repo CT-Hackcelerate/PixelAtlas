@@ -26,7 +26,7 @@ templates) and load them into a test PACS (Orthanc).
 
 | ID | Name | Command |
 |---|---|---|
-| UC-01 | Generate a new synthetic study | `/generate` (→ `generate_study`) |
+| UC-01 | Generate a new synthetic study | `/generate` (→ `find_recipe`/spec authoring → `validate_spec` → `materialize_dataset`) |
 | UC-02 | Generate with tag overrides | `/generate` |
 | UC-03 | Modify or clone an existing PACS study | `/modify` (→ `modify_dataset`) |
 | UC-04 | Validate a dataset for DICOM conformance | `/validate` |
@@ -45,18 +45,22 @@ templates) and load them into a test PACS (Orthanc).
   PatientAge 34Y, manufacturer Siemens"*.
 - **Main flow:**
   1. Agent resolves modality/count/body part/orientation from the request.
-  2. Agent calls `generate_study(modality, count, body_part?, orientation?,
-     enhanced?, overrides?, cine_rate?)` — the server builds a conformant
-     baseline itself (KB-grounded defaults + auto-fill); no template lookup,
-     no manual tag authoring.
-  3. Agent confirms with the user if count > 50 or cardinality is ambiguous
+  2. Agent calls `find_recipe(...)` for this request signature. On a hit,
+     reuses the cached spec. On a miss, resolves a seed (`resolve_seed`) and
+     either extracts a spec from a matching PACS study (`extract_spec`) or
+     authors one from the KB (`get_iod_requirements`/`describe_attributes`) —
+     grounded, not templated.
+  3. Agent applies any requested tag values into `attributes`/`perInstance`,
+     calls `validate_spec` → `materialize_dataset`.
+  4. Agent confirms with the user if count > 50 or cardinality is ambiguous
      (e.g. "N instances" could mean N frames for a multi-frame ask).
-  4. Agent shows the compact summary (UIDs, count, validation, approx token
+  5. Agent shows the compact summary (UIDs, count, validation, approx token
      estimate), gets a **separate** confirmation, then calls
      `store_to_pacs(confirm_store=True)`.
-- **Alternate flow (unsupported modality/type):** `generate_study` returns a
-  precise error (e.g. unsupported IOD family — SR/RT/SEG/encapsulated docs) —
-  the agent reports it and stops, never substitutes a different modality.
+- **Alternate flow (unsupported modality/type):** `get_iod_requirements`/
+  `resolve_seed` reports the IOD family as unsupported (e.g. SR/RT/SEG/
+  encapsulated docs) — the agent reports it and stops, never substitutes a
+  different modality.
 - **Postconditions:** A new, valid, conformant study exists in the PACS;
   nothing existing is modified.
 
@@ -110,10 +114,11 @@ templates) and load them into a test PACS (Orthanc).
 ### UC-08 — Multi-series studies
 
 - **Trigger:** *"Generate a CT series and an MR series in the same study."*
-- **Main flow:** Generate + store series 1, note its `study_uid`, then call
-  `generate_study(..., study_uid=<series 1's study_uid>)` for series 2 — it
-  pins to the same study and reuses PatientID/PatientName/StudyDate
-  automatically. Repeat per series.
+- **Main flow:** Generate + store series 1, note its `study_uid`, then for
+  series 2 set `spec["request"]["attachStudyUID"] = <series 1's study_uid>`
+  before `validate_spec`/`materialize_dataset` — it pins to the same study
+  and reuses PatientID/PatientName/StudyDate automatically. Repeat per
+  series.
 - **Postconditions:** One study, multiple series, consistent identity.
 
 ### UC-09 — PR/KO markup referencing existing instances
@@ -121,8 +126,8 @@ templates) and load them into a test PACS (Orthanc).
 - **Trigger:** *"Add a presentation state marking up the CT I just stored."*
 - **Main flow:** `list_series_instances(study_uid, series_uid)` to get
   concrete instance UIDs, author a spec with a `references` block naming
-  them, then `validate_spec` → `materialize_dataset`. Not a `generate_study`
-  case — PR/KO always point at data that must already exist.
+  them, then `validate_spec` → `materialize_dataset`. PR/KO always point at
+  data that must already exist — no `pixel` directive.
 - **Postconditions:** A new PR or KO instance in the same study, referencing
   the named instances.
 

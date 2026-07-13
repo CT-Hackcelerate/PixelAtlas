@@ -18,11 +18,11 @@ Synthetic DICOM data generation via the Pixel Atlas MCP server.
 - **[sample-prompts.md](sample-prompts.md)** — Real prompt examples, from "basic CT" to "prior study with PR"
 - **[use-cases.md](use-cases.md)** — Structured scenarios: annotation workflows, multi-modality testing, regression suites
 
-## 🏗️ Design & Implementation
+## 🗄️ Archive
 
-- **[design-change-ai-driven.md](design-change-ai-driven.md)** — How the current design replaced the old template system (per-file delta)
-- **[ai-driven-comprehensive-plan.md](ai-driven-comprehensive-plan.md)** — Full build spec: decisions ledger, component scope (reference, not required reading)
-- **[execution-plan-ai-driven.md](execution-plan-ai-driven.md)** — Historical build plan (complete)
+- **[archive/](archive/)** — superseded planning docs from the original
+  design/build effort. Kept for history only — the design they describe has
+  since changed; do not treat them as current.
 
 ## 🛠️ Troubleshooting
 
@@ -100,8 +100,9 @@ User: "100 axial CT instances"
 
 ## Golden Rules
 
-- **One call generates a study** — `generate_study()` does all the DICOM work for you
+- **Check `find_recipe` before authoring** — a cache hit skips straight to `validate_spec`
+- **The agent authors the tags; the server only grounds and builds** — via `get_iod_requirements`/`describe_attributes`, never guessed by the server
 - **Never loop** — if a tool errors, report and stop (don't retry)
 - **Ask before assuming cardinality** — "100 instances" defaults to one series; if unclear, ask
 - **Always confirm before store** — show validation results first
-- **Use `study_uid` to chain series** — attach series 2 to study 1's UID instead of creating a new study
+- **Use `attachStudyUID` to chain series** — attach series 2 to study 1's UID instead of creating a new study

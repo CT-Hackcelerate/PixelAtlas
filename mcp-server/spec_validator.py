@@ -1,7 +1,7 @@
 """validate_spec — deterministic grounding of a Generation Spec against the KB
 *before* the expensive materialization.
 
-Checks (see docs/ai-driven-comprehensive-plan.md §7):
+Checks (see docs/solution-design.md §8):
   - SOP Class is known and in the supported family.
   - every attribute is a real DICOM keyword (error) and valid for the IOD (warning).
   - pixel-module tags and protected UID tags are not pinned in `attributes` (error).

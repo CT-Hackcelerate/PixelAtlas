@@ -17,7 +17,7 @@
       "Bash(.venv/Scripts/python.exe -)",
       "Bash(xargs -I{} sh -c 'true')",
       "Bash(.venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0,'mcp-server'\\); import server; print\\('OK'\\)\")",
-      "Bash(python -m py_compile server.py materializer.py defaults.py orthanc_client.py)",
+      "Bash(python -m py_compile server.py materializer.py orthanc_client.py)",
       "Bash(python -c ' *)",
       "Bash(git add *)",
       "Bash(git commit -m ' *)",

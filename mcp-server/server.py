@@ -1,8 +1,8 @@
-"""Pixel Atlas MCP server — entry point (AI-driven redesign).
+"""Pixel Atlas MCP server — entry point.
 
 The agent authors (or extracts) a Generation Spec grounded on the Knowledge Base,
 validates it (validate_spec -> spec_id), then materializes it. See
-docs/ai-driven-comprehensive-plan.md for the full design.
+docs/architecture.md and docs/solution-design.md for the full design.
 """
 
 import logging
@@ -26,6 +26,7 @@ import materializer
 import modify
 import orthanc_client
 import pacs_store
+import priors
 import recipe_store
 import seed_resolver
 import spec_extractor
@@ -46,10 +47,9 @@ def get_iod_requirements(sop_class_uid: str | None = None, modality: str | None 
 
     Returns a COMPACT summary by default (module names + usage + counts + the
     mandatory Type-1 tag keywords) — small enough to keep in context. Only pass
-    `full=True` if you truly need every tag's VR/enum detail for manual authoring;
-    it is ~9k tokens, so avoid it. **For normal generation, prefer `generate_study`
-    — you usually don't need this tool at all.** Covers image IODs + PR/KO; other
-    IODs are reported unsupported.
+    `full=True` if you truly need every tag's VR/enum detail for authoring; it is
+    ~9k tokens, so avoid it. Check `find_recipe` first — a cache hit skips this
+    call entirely. Covers image IODs + PR/KO; other IODs are reported unsupported.
     """
     resolved = kb.resolve_sop_class(modality=modality, enhanced=enhanced, sop_class_uid=sop_class_uid)
     if not resolved:
@@ -128,101 +128,60 @@ def materialize_dataset(spec_id: str, instance_count: int | None = None, job_id:
 
 
 @mcp.tool()
-def generate_study(modality: str, count: int = 1, body_part: str | None = None,
-                   orientation: str | None = None, enhanced: bool = False,
-                   overrides: dict | None = None, cine_rate: int | None = None,
-                   study_uid: str | None = None) -> dict:
-    """ONE-SHOT generation — the preferred path. Build a conformant synthetic study
-    for `modality` (CT, MR, US, CR, DX, MG, NM, PT, XA, ...) and stage it, in a
-    single call. The server builds a conformant baseline from defaults + fills any
-    required tags itself — you do NOT need get_iod_requirements or to author a spec.
+def modify_dataset(study_uid: str, overrides: dict | None = None, per_instance: dict | None = None,
+                   regenerate_uids: bool = True, confirm_destructive: bool = False,
+                   job_id: str | None = None) -> dict:
+    """Edit an existing PACS study's tags. Fetches EVERY instance across EVERY
+    series of the study and preserves that structure in the result (each source
+    series maps to its own new series) — a multi-series CT/MR study or a
+    multi-instance US cine study comes out with the same series layout it went
+    in with. Default (regenerate_uids=True) writes a new derived study
+    (non-destructive). regenerate_uids=False keeps the original UIDs
+    (destructive in-place overwrite) and requires confirm_destructive=True.
 
-    - `enhanced=True` selects the multi-frame variant (e.g. US Multi-frame, Enhanced
-      CT/MR); `count` then means number of frames. `cine_rate` sets the cine rate
-      for classic multi-frame (e.g. US) — e.g. cine_rate=60.
-    - `overrides` is an optional {Keyword: value} map for any tag you want to pin
-      (e.g. {"PatientAge": "034Y", "BodyPartExamined": "LIVER"}).
-    - `study_uid`: attach this new series to an existing PACS study instead of
-      starting a new one — for a multi-series study (same or different modality
-      per series). The study must already be stored (generate + store its first
-      series first); the new series reuses that study's PatientID/PatientName/
-      StudyDate automatically. Use `list_series_instances` afterwards if you then
-      need this series' instance UIDs (e.g. to build a PR/KO referencing it).
-
-    Returns {job_id, study_uid, count, frames?, output_path, validation, approx_tokens}.
-    Does NOT store — call store_to_pacs after confirming with the user. On a failure
-    it returns a precise error (missing tags), never a retry loop. For PR/KO or
-    editing an existing study, use the spec/extract_spec flow instead.
+    - `overrides`: {Keyword: value} applied identically to every instance
+      (e.g. {"PatientAge": "045Y"}).
+    - `per_instance`: {Keyword: rule} applied per instance, indexed from 0
+      *within each original series* (not across the whole study) — e.g. to
+      progressively shift a position tag: {"ImagePositionPatient":
+      {"rule": "increment", "delta": [0, 0, 0.5]}} adds 0.5mm to the Z
+      component of each instance's *own existing* position, instance 0
+      unchanged, instance 1 +0.5, instance 2 +1.0, etc. Other rule kinds:
+      "linspace" (start/step from scratch), "const" (fixed value), "index+1".
     """
-    import defaults
-    try:
-        sop = kb.resolve_sop_class(modality=modality, enhanced=enhanced)
-        if not sop or not kb.is_supported(sop):
-            return {"error": f"Modality '{modality}' has no supported image IOD. Supported: image IODs + PR/KO (PR/KO via the spec flow)."}
-        if kb.is_reference_object(sop):
-            return {"error": "PR/KO objects reference existing instances — use validate_spec/materialize_dataset with a `references` block, not generate_study."}
-
-        spec = defaults.baseline_spec(modality, count, body_part, orientation, enhanced, overrides, study_uid)
-        if kb.multiframe_kind(sop) == "classic" and cine_rate:
-            spec["cine"] = {"cineRate": cine_rate}
-        unfilled = defaults.autofill_required(spec)
-
-        v = spec_validator.validate_spec(spec)
-        if not v["grounded"]:
-            audit_log.log_call("generate_study", {"modality": modality}, f"spec errors: {len(v['errors'])}")
-            return {"error": "Could not build a valid spec — check overrides.", "errors": v["errors"]}
-
-        # Probe-guided auto-repair: read exactly what the validator wants, fill it,
-        # retry. Bounded (<=3 rounds) and stops the moment a round makes no progress
-        # — deterministic, never an unbounded loop.
-        result = materializer.materialize_dataset(v["spec_id"], instance_count=count)
-        missing = []
-        for _round in range(3):
-            if "error" not in result:
-                break
-            job = result.get("job_id")
-            missing = validator.iod_missing_tags(str(config.STAGING_DIR / job)) if job else []
-            if not defaults.fill_missing_tags(spec, missing):
-                break  # nothing top-level left to fill → stop, report precisely
-            v = spec_validator.validate_spec(spec)
-            if not v["grounded"]:
-                break
-            result = materializer.materialize_dataset(v["spec_id"], instance_count=count)
-        if "error" in result:
-            audit_log.log_call("generate_study", {"modality": modality}, "probe_failed")
-            nested = sorted({t for _m, t, _c in missing if "/" in t})
-            hint = (" This IOD needs nested sequence content this one-shot builder can't"
-                    " auto-fill: " + ", ".join(nested) + ". Use the spec/validate_spec flow"
-                    " to author it.") if nested else ""
-            return {"error": result["error"] + hint, "probe_validation": result.get("probe_validation")}
-
-        audit_log.log_call("generate_study", {"modality": modality, "count": count, "enhanced": enhanced}, f"job_id={result['job_id']}")
-        return {
-            "job_id": result["job_id"], "study_uid": result["study_uid"],
-            "count": result.get("count"), "frames": result.get("frames"),
-            "output_path": result["output_path"], "validation": "passed",
-            "approx_tokens": result.get("approx_tokens"),
-            "next_step": "Show the user this summary and, on confirmation, call store_to_pacs(output_path, confirm_store=True).",
-        }
-    except SpecError as exc:
-        audit_log.log_call("generate_study", {"modality": modality}, f"error: {exc}")
-        return {"error": str(exc)}
-
-
-@mcp.tool()
-def modify_dataset(study_uid: str, overrides: dict | None = None, regenerate_uids: bool = True,
-                   confirm_destructive: bool = False, job_id: str | None = None) -> dict:
-    """Edit an existing PACS study's tags. Default (regenerate_uids=True) writes a
-    new derived study (non-destructive). regenerate_uids=False keeps the original
-    UIDs (destructive in-place overwrite) and requires confirm_destructive=True."""
     if not regenerate_uids and not confirm_destructive:
         return {"error": "regenerate_uids=False is a destructive in-place overwrite. Confirm with the user, then retry with confirm_destructive=True."}
     try:
-        result = modify.modify_dataset(study_uid, overrides, regenerate_uids, job_id)
+        result = modify.modify_dataset(study_uid, overrides, per_instance, regenerate_uids, job_id)
         audit_log.log_call("modify_dataset", {"study_uid": study_uid, "regenerate_uids": regenerate_uids, "count": result["count"]}, f"job_id={result['job_id']}")
         return result
     except SpecError as exc:
         audit_log.log_call("modify_dataset", {"study_uid": study_uid}, f"rejected: {exc}")
+        return {"error": str(exc), **({"job_id": exc.job_id} if exc.job_id else {})}
+
+
+@mcp.tool()
+def generate_prior_study(study_uid: str, days_before: int, overrides: dict | None = None,
+                         job_id: str | None = None) -> dict:
+    """Generate a prior study for the same patient as `study_uid`, dated
+    `days_before` days earlier. A full replica of the reference study's
+    structure — EVERY series and instance is cloned (each source series maps
+    to its own new series in the prior), not a single representative instance
+    reconstructed from scratch — so a multi-series CT/MR study or a
+    multi-instance US cine study gets a prior with the same series layout.
+    PatientID/PatientName are reused as-is; the prior gets its own fresh
+    StudyInstanceUID/SeriesInstanceUIDs/SOPInstanceUIDs, never edits the
+    original. `overrides` (optional) is applied identically to every instance
+    on top of the date shift, same as modify_dataset's `overrides`.
+
+    Does NOT store — call store_to_pacs after confirming with the user, same
+    as modify_dataset/materialize_dataset."""
+    try:
+        result = priors.generate_prior_study(study_uid, days_before, overrides, job_id)
+        audit_log.log_call("generate_prior_study", {"study_uid": study_uid, "days_before": days_before, "count": result["count"]}, f"job_id={result['job_id']}")
+        return result
+    except SpecError as exc:
+        audit_log.log_call("generate_prior_study", {"study_uid": study_uid}, f"rejected: {exc}")
         return {"error": str(exc), **({"job_id": exc.job_id} if exc.job_id else {})}
 
 

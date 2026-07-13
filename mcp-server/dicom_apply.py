@@ -50,3 +50,47 @@ def apply_value_map(ds: pydicom.Dataset, mapping: dict) -> None:
                 setattr(ds, keyword, coerce_value(value))
         except (ValueError, TypeError) as exc:
             raise SpecError(f"Invalid value for tag '{keyword}': {value!r} — {exc}") from exc
+
+
+# --- per-instance rule evaluation --------------------------------------------
+# Shared by fresh IOD-authored generation (materializer.py) and PACS-sourced
+# edits (modify.py) — same rule language either way: a keyword->rule map,
+# evaluated per instance index `i` against that instance's own dataset `ds`.
+def eval_rule(keyword: str, rule: dict, i: int, ds: pydicom.Dataset):
+    kind = rule.get("rule", "")
+    if kind in ("uid", "index+1") or kind.startswith("index"):
+        if kind == "uid":
+            return None  # UID rules are handled by the UID assignment step
+        offset = rule.get("offset", 1 if kind == "index+1" else 0)
+        return str(i + offset)
+    if kind == "linspace":
+        return str(round(rule.get("start", 0.0) + i * rule.get("step", 1.0), 3))
+    if kind == "derive_from_slice":
+        loc = float(getattr(ds, "SliceLocation", 0.0))
+        return [-150.0, -150.0, loc]
+    if kind == "const":
+        return rule.get("value")
+    if kind == "increment":
+        # Progressive shift *relative to this instance's own current value* —
+        # e.g. nudge ImagePositionPatient by 0.5mm per instance on an existing
+        # (possibly PACS-sourced) dataset, rather than computing from scratch.
+        current = getattr(ds, keyword, None)
+        delta = rule.get("delta", 0)
+        if isinstance(current, (list, pydicom.multival.MultiValue)):
+            deltas = delta if isinstance(delta, list) else [delta] * len(current)
+            if len(deltas) != len(current):
+                raise SpecError(f"'increment' delta length {len(deltas)} doesn't match "
+                                 f"'{keyword}' current length {len(current)}")
+            return [round(float(v) + i * float(d), 6) for v, d in zip(current, deltas)]
+        base = float(current) if current not in (None, "", []) else 0.0
+        return str(round(base + i * float(delta), 6))
+    raise SpecError(f"Unknown perInstance rule '{kind}' for tag '{keyword}'")
+
+
+def apply_per_instance(ds: pydicom.Dataset, per_instance: dict, i: int) -> None:
+    for keyword, rule in (per_instance or {}).items():
+        if not isinstance(rule, dict):
+            continue
+        value = eval_rule(keyword, rule, i, ds)
+        if value is not None:
+            apply_value_map(ds, {keyword: value})

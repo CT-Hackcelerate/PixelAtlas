@@ -1,18 +1,27 @@
 Pixel Atlas generates/modifies synthetic DICOM test data via the local
 `pixel-atlas` MCP server, storing results in a local Orthanc PACS.
 
-How generation works: **prefer the one-shot `generate_study` tool** — it builds a
-conformant study by itself (server-side defaults + auto-fill). You do NOT author
-DICOM tags, do NOT call `get_iod_requirements`, and NEVER read files from disk for
-generation. Flow: `generate_study(...)` → confirm → `store_to_pacs`.
+How generation works: **check `find_recipe` first** — a cache hit returns a
+previously-validated spec, skip straight to `validate_spec`. On a miss, you
+author the DICOM Generation Spec yourself, grounded via
+`get_iod_requirements`/`describe_attributes` (or `extract_spec` from a
+matching PACS study via `resolve_seed`) — the server only grounds
+(`validate_spec`) and builds (`materialize_dataset`); it never guesses tag
+values for you. Flow: `find_recipe` → (author or reuse) → `validate_spec` →
+`materialize_dataset` → confirm → `store_to_pacs`.
 
 Core rules:
 - **Never loop.** If a tool returns an `error`, report it and stop — do not retry
-  the same call hoping for a different result. Respond precisely and concisely.
-- One `generate_study` call = one study. Multi-frame/cine: `enhanced=true`,
-  `count` = frames, `cine_rate` for US. Tag requests → `overrides`.
-- Advanced only (edit an existing study, PR/KO, or a case `generate_study` can't
-  build): use `extract_spec`/`validate_spec`/`materialize_dataset`.
+  the same call hoping for a different result. A `validate_spec` failure gets at
+  most a couple of targeted repairs (fix exactly the reported tags) before you
+  stop and ask. Respond precisely and concisely.
+- Multi-frame/cine: `instanceCount` = frames; set Cine Module timing
+  (`CineRate`/`FrameTime` or `FrameTimeVector`) yourself in `attributes`. Tag
+  requests → `attributes` (uniform) or `perInstance` (varying).
+- Editing an existing study: `modify_dataset(study_uid, overrides?, ...)` directly
+  (self-contained, not part of the spec-authoring flow). PR/KO: author a spec with
+  a `references` block naming existing target instances, then `validate_spec` →
+  `materialize_dataset`.
 - Supported scan types: standard image IODs (single- and multi-frame) plus PR and
   KO. For anything else (SR, RT, SEG, encapsulated docs, …) say it's unsupported —
   never substitute.
@@ -21,6 +30,6 @@ Core rules:
 - Always confirm before `store_to_pacs` (needs `confirm_store=True`); show the
   validation result first.
 - Report compact summaries (UIDs, counts, pass/fail, approx_tokens) — never dump
-  raw per-instance tags.
+  raw per-instance tags or the full spec JSON.
 
-See docs/ai-driven-comprehensive-plan.md and docs/solution-design.md.
+See docs/architecture.md and docs/solution-design.md.

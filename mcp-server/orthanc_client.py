@@ -112,6 +112,33 @@ def list_instance_ids(study_uid: str, timeout: float = 10.0) -> list[str]:
     return [instance["ID"] for instance in instances_resp.json()]
 
 
+def list_instance_geometry(study_uid: str, timeout: float = 10.0) -> list[dict]:
+    """InstanceNumber/SliceLocation for every instance of a study, in one Instance-level
+    /tools/find call (metadata only, no pixel data) — used to resample cross-sectional
+    slice spacing to a different instance count on PACS-seeded regeneration, instead of
+    freezing every new instance to the single seed instance's SliceLocation."""
+    body = {
+        "Level": "Instance",
+        "Query": {"StudyInstanceUID": study_uid},
+        "Expand": True,
+        "RequestedTags": ["InstanceNumber", "SliceLocation"],
+    }
+    resp = _session().post(f"{config.ORTHANC_URL}/tools/find", json=body, timeout=timeout)
+    resp.raise_for_status()
+    geo = []
+    for entry in resp.json():
+        tags = entry.get("RequestedTags", {})
+        loc = tags.get("SliceLocation")
+        if loc in (None, ""):
+            continue
+        try:
+            geo.append((int(tags.get("InstanceNumber") or 0), float(loc)))
+        except ValueError:
+            continue
+    geo.sort(key=lambda pair: pair[0])
+    return [{"instance_number": n, "slice_location": s} for n, s in geo]
+
+
 def get_first_instance_id(study_uid: str, timeout: float = 10.0) -> str:
     """Resolve a study's Orthanc instance ID for its first stored instance."""
     instance_ids = list_instance_ids(study_uid, timeout)

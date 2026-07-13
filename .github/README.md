@@ -80,9 +80,10 @@ Design for the GitHub Copilot agent that generates/modifies test DICOM data on r
 - [Solution design](../docs/solution-design.md) — Knowledge Base, Generation Spec, materialization, token economy
 - [Architecture](../docs/architecture.md) — components, tool contract, diagrams
 - [Simple overview](../docs/ai-driven-simple-overview.md) — plain-English explanation
-- [Comprehensive build plan](../docs/ai-driven-comprehensive-plan.md) — full scope, spec format, decisions ledger
+- [Use cases](../docs/use-cases.md) — user-facing scenarios the tool must support
 
-Historical (template-based, superseded): [use cases](../docs/use-cases.md).
+Superseded planning docs (kept for history only, not current design):
+[docs/archive/](../docs/archive/).
 
 ## Status
 

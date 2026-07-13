@@ -1,217 +1,230 @@
 # Pixel Atlas — Architecture
 
-> The current, implemented architecture. Companion to
-> [solution-design.md](solution-design.md) (the **how**),
-> [ai-driven-simple-overview.md](ai-driven-simple-overview.md) (plain English),
-> and [ai-driven-comprehensive-plan.md](ai-driven-comprehensive-plan.md) (full
-> build reference).
+> Components, data flow, and the MCP tool reference for the system as it
+> exists today. Companion to [solution-design.md](solution-design.md) (the
+> **how** — Generation Spec format, Knowledge Base, token economy) and
+> [BEGINNERS-GUIDE.md](BEGINNERS-GUIDE.md) (plain-English on-ramp).
 
-## 1. Architectural overview
+## 1. Overview
 
-Local-first, MCP-mediated: the agent decides *what*, the MCP server does the *how*
-deterministically. The knowledge and generation core is:
+Pixel Atlas is **local-first and MCP-mediated**: an AI coding agent (Claude
+Code, or GitHub Copilot Chat) authors the DICOM tags, grounded on a
+standard-derived Knowledge Base; a local Python MCP server (`mcp-server/`)
+only grounds/validates that authoring and does the deterministic mechanical
+work — pixel synthesis, UID assignment, per-instance expansion, PACS I/O. No
+DICOM file is ever read by the agent directly, and a recipe cache means the
+authoring step itself is usually skipped on repeat requests.
 
-- **Knowledge comes from a standard-derived DICOM Knowledge Base (KB)**, not
-  per-template YAML. One KB covers every SOP Class and is reused across all
-  requests and modalities. The KB is **committed in-repo as plain JSON**
-  (`mcp-server/kb/2026c/`) — pinned to one DICOM standard edition, no network
-  fetch, no parse delay, identical across every environment.
-- **The agent produces a DICOM Generation Spec** (JSON, canonically the DICOM
-  JSON Model; XML optional) grounded on the KB. This structured IR — not template
-  cloning — is what drives generation.
-- **A deterministic Materializer library converts the spec into `.dcm` files.**
-  The LLM authors one spec; the Materializer expands N instances, synthesizes
-  pixel data, and assigns UIDs — the same token discipline (one bounded planning
-  artifact per study). Multi-frame functional groups (Enhanced CT/MR/PT/...) are
-  built by walking the KB's `group_macros` generically — no per-modality Python.
-- **Everything DICOM-sensitive stays local**; only NL prompts and the (synthetic,
-  non-binary) spec cross to the AI agent's cloud backend (Claude / Copilot's
-  GPT-4o, depending on which client is connected).
+Three ideas make that possible:
 
-The trust boundary, deployment paths (A local / B hosted), and non-functional
-posture are standard local-first (developer machine + local PACS network vs. the Copilot cloud).
+- **A DICOM Knowledge Base (KB)**, derived once from the DICOM standard and
+  **committed in-repo as plain JSON** (`mcp-server/kb/2026c/`). It covers
+  every SOP Class the standard defines, not a curated subset, so there's no
+  "no template for this modality yet" dead end. It loads from disk once per
+  process — no network call, no first-run parse delay.
+- **A Generation Spec** — a small JSON envelope (the DICOM JSON Model plus a
+  thin generation layer) that describes *what* to build: attributes, an
+  optional pixel directive, per-instance rules. It is O(1) in instance count —
+  never lists per-instance data.
+- **A deterministic Materializer** that turns a Generation Spec into `.dcm`
+  files: expands to N instances, synthesizes pixel data, assigns UIDs. The
+  agent authors or edits one spec; the Materializer does the bulk work.
 
-## 2. Component architecture
+Only natural-language prompts and the (synthetic, textual) Generation Spec
+ever cross to the agent's cloud backend. DICOM binaries and pixel data never
+leave the local machine.
 
-```mermaid
-flowchart TB
-    subgraph WS["Developer Workstation (Windows 11 + WSL2)"]
-        subgraph VSC["VS Code"]
-            CC["AI coding agent (Claude Code or<br/>Copilot Chat, Agent Mode)<br/>authors/edits the Generation Spec"]
-            CM["Chat Mode: Pixel Atlas"]
-            PF["Prompt files:<br/>/generate /modify<br/>/validate /status /list-recipes"]
-        end
-        subgraph MCPSRV["Pixel Atlas MCP Server (Python)"]
-            DISP["Tool dispatcher"]
-            KB["DICOM Knowledge Base<br/>(iod_lookup.py — standard-derived,<br/>all SOP Classes; get_iod_requirements,<br/>describe_attributes)"]
-            SPECV["Spec Validator<br/>(validate_spec — grounding<br/>vs KB, pre-materialization)"]
-            MAT["Materializer<br/>(spec → N .dcm: from_json,<br/>per-instance rules, pixel synth,<br/>UID gen)"]
-            EXT["Spec Extractor<br/>(extract_spec: PACS study → DICOM JSON)"]
-            UIDG["UID Generator (uid_strategy.py)"]
-            PIX["Pixel Synthesizer (seed_builder.py)"]
-            VAL["Validator<br/>(dicom-validator + structural)"]
-            PC["PACS Client (orthanc_client.py)"]
-            REC["Recipe Store<br/>(cached validated specs)"]
-            JR["Job Registry + Audit Log"]
-        end
-        FS[("Filesystem:<br/>staging/, recipes/, logs/")]
-    end
-
-    subgraph DOCKER["Docker Desktop"]
-        ORTHANC[("Orthanc PACS")]
-    end
-    subgraph CLOUD["Agent Cloud Backend"]
-        GPT["Claude, or Copilot's GPT-4o —<br/>whichever agent is connected"]
-    end
-
-    CC <--> GPT
-    CC --> CM --> PF
-    CC <-->|MCP stdio| DISP
-    DISP --> KB
-    DISP --> SPECV --> KB
-    DISP --> EXT --> PC
-    DISP --> MAT
-    MAT --> KB
-    MAT --> UIDG
-    MAT --> PIX
-    MAT --> FS
-    DISP --> VAL --> FS
-    DISP --> REC --> FS
-    DISP --> PC --> ORTHANC
-    DISP --> JR --> FS
-```
-
-Component roles:
-
-| Component | Status | Role |
-|---|---|---|
-| AI coding agent (Claude Code / Copilot Chat) | **Reframed** | Now authors/edits a structured Generation Spec grounded on KB tool responses — not just picking a template and overrides. |
-| DICOM Knowledge Base | **New; committed in-repo** | Standard-derived, all-SOP-Class knowledge, pinned as plain JSON at `mcp-server/kb/2026c/` (no runtime build/network fetch). Backs `get_iod_requirements` + `describe_attributes`. Reused by Spec Validator and Materializer — including generic functional-group/macro construction for any modality (`group_macros`-driven, no per-modality code). |
-| Spec Validator | **New** | Deterministic grounding of a spec vs the KB before materialization, **plus curated cross-tag consistency rules** (pixel-module group, Modality↔SOPClass, geometry triplet; decision #1) and pixel-module-tag rejection (decision #2). |
-| Spec Store | **New** | Holds validated specs server-side keyed by `spec_id` (decision #6) so the spec isn't re-sent between `validate_spec` → `materialize_dataset`; repairs apply a diff. |
-| Materializer | **New (replaces the template clone-and-rewrite core)** | Compiles a spec → `.dcm` (from_json, per-instance/per-frame rules, UID gen). **Probe-first** (decision #5); handles single-frame/multi-frame/PR/KO (decision #4); preserves source pixels on the PACS path (decision #2). |
-| Spec Extractor | **New** | PACS study → DICOM JSON Model spec, for the PACS-first and modify paths. **No PHI scrubbing for now** (decision #8). |
-| Pixel Synthesizer | **Generalized** | Modality-agnostic Image Pixel module synthesis from the spec's `pixel` directive, IOD path only (was per-template seed `.dcm`). |
-| Recipe Store | **New (replaces Template Catalog)** | Auto-grown cache of validated specs keyed by modality+bodypart+orientation+SOPClass+module-flags (decision #7); `list_recipes`/`find_recipe`. |
-| Audit Log | **Extended** | Per job records full spec + provenance + KB edition (decision #11) — server-side only, zero token cost. |
-| UID Generator, Validator, PACS Client, Job Registry, Orthanc | **Unchanged** | Post-generation and I/O are format-agnostic. |
-
-## 3. Revised MCP tool contract
-
-The MCP tool contract:
-Unchanged tools (`validate_dataset`, `store_to_pacs`, `list_pacs_studies`,
-`check_pacs_feature`, `get_job_status`, `health_check`) keep their current
-signatures.
-
-| Tool | Input | Output | Notes |
-|---|---|---|---|
-| `get_iod_requirements` | `{sop_class_uid? \| modality?}` | modules (M/C/U) + Type 1/1C/2/2C/3 tags (keyword, VR, VM, condition) | **Expanded** to the full KB — any SOP Class, not just templated ones. Primary grounding tool. Backed by `iod_lookup.py`; no `dicom-validator` call at request time. |
-| `describe_attributes` | `{keywords[] \| tags[]}` | `[{tag, keyword, vr, vm, retired?}]` | **New.** Fast batch VR/keyword lookup while the AI authors a spec. |
-| `validate_spec` | `{spec}` | `{grounded, spec_id, errors[]:{tag,keyword,reason}, warnings[]}` | **New.** Deterministic pre-materialization grounding vs KB (tag exists, VR, IOD validity, Type-1 presence, protected-tag placement) **plus the curated cross-tag consistency rules** — pixel-module group, Modality↔SOPClass, geometry triplet — and **rejects pixel-module tags in `attributes`** (decisions #1, #2). On success **stores the spec server-side and returns a `spec_id`** (decision #6) so it need not be re-sent. Feeds the repair loop. |
-| `extract_spec` | `{study_uid \| path}` | `{spec}` (DICOM JSON Model envelope) | **New.** Fetches an existing study and emits a Generation Spec. **No PHI scrubbing for now (decision #8)** — source identity and the Image Pixel module are preserved as-is (reference PACS assumed to hold test data). Basis for PACS-first generate and for modify. |
-| `materialize_dataset` | `{spec_id, instance_count?, target_pacs?, job_id?}` | `{job_id, study_uid, series_uid, output_path, count}` | **New (replaces `generate_dataset`).** Takes a **`spec_id`** (decision #6), not the full spec. **Probe-first (decision #5):** materializes and fully validates one instance before expanding to N. IOD path synthesizes the pixel module; **PACS path preserves source pixels untouched (decision #2)**. Handles multi-frame (count = frames) and PR/KO (reference-based, no pixels) per solution-design §10 (decision #4). Rejects an ungrounded `spec_id`. Reuses UID/staging/job-registry/safety-net machinery. |
-| `resolve_seed` | `{modality, body_part?, orientation?, sop_class_uid?}` | `{source_type: pacs\|iod, pacs_candidates[]}` | **Kept, simplified.** On a PACS hit → agent calls `extract_spec`; otherwise `source_type=iod` (KB-authored spec) — the old `template`/`none` outcomes collapse into `iod` (no coverage gap). **Matching stays lightweight** (indexed `ModalitiesInStudy` query + `StudyDescription` substring for body_part/orientation; **no per-instance tag scanning**) so it doesn't slow down as the PACS grows — see [solution-design.md §4.1](solution-design.md#41-seed-matching-criteria-kept-lightweight). |
-| `modify_dataset` | `{source:{study_uid\|path}, overrides, regenerate_uids}` | `{job_id, study_uid, output_path, count}` | **Reframed** as a convenience wrapper over `extract_spec` → apply overrides → `materialize_dataset`. Same non-destructive default + `confirm_destructive` gate. |
-| `list_recipes` / `find_recipe` | `{modality?, body_part?, orientation?}` / `{modality, body_part?, orientation?, ...}` | recipe summaries / a cached spec (or a miss) | **Replaces `list_templates`/`get_template_info`.** Browse the auto-grown recipe cache. |
-| `generate_study` | `{modality, count=1, body_part?, orientation?, enhanced?, overrides?, cine_rate?, study_uid?}` | `{job_id, study_uid, count, frames?, output_path, validation, approx_tokens}` | **One-shot generation (preferred path).** Builds a conformant study from defaults + auto-fill. **New:** `study_uid` pins the new series to an existing study (for multi-series workflows) — reuses that study's identity (PatientID/PatientName/StudyDate) automatically, avoiding double-entry. |
-| `list_series_instances` | `{study_uid, series_uid?}` | `{instances: [{series_uid, sop_class_uid, sop_instance_uid, instance_number}]}` | **New.** Enumerates stored instances for a PACS study (optionally one series). Used to get concrete instance UIDs for PR/KO `references` blocks — never read `.dcm` files directly for this. Errors if the study/series isn't stored yet. |
-
-## 4. The IR pipeline (data flow)
+## 2. The two-actor split
 
 ```mermaid
 flowchart LR
-    P["User prompt"] --> A["AI coding agent"]
-    A -->|"resolve_seed"| RS{PACS match?}
-    RS -->|yes| EX["extract_spec<br/>(study → DICOM JSON)"]
-    RS -->|no| KBQ["get_iod_requirements<br/>describe_attributes"]
-    EX --> SPEC["Generation Spec<br/>(JSON / XML IR)"]
-    KBQ --> A2["Agent authors spec<br/>(grounded on KB)"] --> SPEC
-    SPEC --> VS["validate_spec<br/>(grounding gate)"]
-    VS -->|errors| A2
-    VS -->|grounded| MAT["materialize_dataset<br/>(expand N, pixel synth, UIDs)"]
-    MAT --> DCM[("staging/*.dcm")]
-    DCM --> VD["validate_dataset"] --> ST["store_to_pacs"] --> ORT[("Orthanc")]
-    SPEC -.cache on success.-> REC[("Recipe Store")]
+    subgraph AI["AI coding agent — decides WHAT"]
+        direction TB
+        A1["Understand the request"]
+        A2["Pick a tool + arguments"]
+        A3["Ask before anything risky<br/>(count &gt; 50, destructive overwrite,<br/>any PACS store)"]
+        A1 --> A2 --> A3
+    end
+    subgraph MCP["mcp-server/ (Python) — does the HOW, deterministically"]
+        direction TB
+        M1["Ground the request against the KB"]
+        M2["Build the file(s): pydicom + numpy"]
+        M3["Validate against the DICOM standard"]
+        M4["Store to Orthanc"]
+        M1 --> M2 --> M3 --> M4
+    end
+    U(("User")) --> AI
+    AI -- "MCP tool call (JSON)" --> MCP
+    MCP -- "result (JSON)" --> AI
+    AI --> U
+    MCP --> PACS[("Orthanc PACS")]
 ```
 
-The IR (the Generation Spec) is the contract between the AI (author) and the
-Materializer (consumer). Everything left of `materialize_dataset` is
-knowledge/planning (LLM + KB, cheap, O(1) in instance count); everything right is
-deterministic bulk work (no LLM, scales with N).
+The agent never touches a `.dcm` file or the PACS directly — only tool calls
+and their JSON results. Chat mode + prompt files (`.claude/commands/`,
+`.github/chatmodes/`, `.github/prompts/`) scope each slash command down to
+the tools it actually needs, instead of exposing every tool for every request.
 
-### 4.1 Multi-series workflow
+## 3. Two generation pipelines
+
+There isn't one single pipeline — there are two, and picking the right one
+matters:
+
+```mermaid
+flowchart TB
+    Req["User request"] --> Q{Which case?}
+
+    Q -->|"Any fresh-generation<br/>request"| Rec{find_recipe}
+    Rec -->|"hit"| RecSpec["Cached Generation Spec<br/>+ fresh overrides"]
+    Rec -->|"miss"| Seed{resolve_seed}
+    Seed -->|"similar study<br/>in PACS"| Ex["extract_spec<br/>(single-series studies only)"]
+    Seed -->|"no match"| KBQ["get_iod_requirements /<br/>describe_attributes"]
+    Ex --> Author["Agent authors/edits<br/>the Generation Spec"]
+    KBQ --> Author
+    RecSpec --> VS["validate_spec → spec_id"]
+    Author --> VS
+    VS --> MD["materialize_dataset(spec_id)<br/>probe-first, bounded auto-repair,<br/>auto-saves a recipe on success"]
+    MD --> Out1[("staging/&lt;job_id&gt;/*.dcm")]
+
+    Q -->|"Modify tags on an<br/>existing study"| Mod["modify_dataset(study_uid, overrides)"]
+    Q -->|"Prior study, same<br/>patient, earlier date"| Pri["generate_prior_study(study_uid, days_before)"]
+    Mod --> Clone["study_clone.py: fetch every<br/>instance of every series, remap UIDs"]
+    Pri --> Clone
+    Clone --> Out1
+
+    Out1 --> Val["validate_dataset"] --> Confirm{Confirm?} --> St["store_to_pacs"] --> Orthanc[("Orthanc")]
+```
+
+**Why two flows, not one.** Fresh generation, editing via a spec, and PR/KO
+all go through the same Generation Spec + Materializer pipeline (grounded
+against the KB, probe-validated before expanding to N) — a recipe hit just
+short-circuits the authoring step. `modify_dataset` and
+`generate_prior_study` deliberately **bypass the spec pipeline entirely** —
+they call `study_clone.py` directly, because their job is *faithful
+replication*: every series and every instance of the source study must
+survive unchanged except for the requested edits, which a from-scratch spec
+can't guarantee as cleanly as a direct clone-and-remap. `extract_spec` (used
+by the spec-authoring flow) is intentionally narrower: it only supports
+single-series source studies — for a multi-series study, `modify_dataset`/
+`generate_prior_study` are the tools that preserve structure correctly.
+
+## 4. Component map
+
+| Concern | File(s) | Role |
+|---|---|---|
+| Entry point | `server.py` | Registers every MCP tool on a `FastMCP` instance (stdio transport). |
+| Knowledge Base | `iod_lookup.py` | Loads the committed KB JSON (`kb/2026c/`); answers module/tag requirements, modality↔SOP-Class resolution, and builds functional-group skeletons generically from `group_macros` (works for any modality, no per-modality Python). Shared with `validator.py`. |
+| Spec validation | `spec_validator.py` | `validate_spec` — grounds a spec against the KB (tag existence, VR, IOD validity, pixel-module/UID placement) plus a few cross-tag consistency rules. Stores the spec and returns a `spec_id` on success. |
+| Spec storage | `spec_store.py` | In-memory store of validated specs keyed by `spec_id`; owns `SpecError`. |
+| Pixel + base dataset | `seed_builder.py` | Synthesizes pixel data (noise/gradient/phantom) and builds the minimal base dataset for the no-PACS-seed path. |
+| Materializer | `materializer.py` | `materialize_dataset(spec_id)` — builds `.dcm` files: single-frame (N files, probe-first), classic multi-frame (cine), enhanced multi-frame (functional groups), or PR/KO (reference-based, no pixels). |
+| Extraction | `spec_extractor.py` | `extract_spec` — turns a **single-series** PACS study (or local `.dcm`) into a Generation Spec. |
+| Full-fidelity clone | `study_clone.py` | Fetches every instance of every series of a study and remaps UIDs — the shared core of `modify_dataset` and `generate_prior_study`. |
+| Modify | `modify.py` | `modify_dataset` — applies overrides/per-instance rules via `study_clone`; non-destructive by default. |
+| Priors | `priors.py` | `generate_prior_study` — clones a study via `study_clone`, shifts `StudyDate` back N days. |
+| Seed resolution | `seed_resolver.py` | `resolve_seed` — PACS-first (lightweight `ModalitiesInStudy` + `StudyDescription`-substring match), else KB fallback. |
+| Recipes | `recipe_store.py` | File-based cache of validated, KB-authored specs, keyed by modality + body part + orientation + SOP Class + flags. |
+| Validation | `validator.py` | `validate_dataset` — IOD conformance (`dicom-validator`), cross-instance structural checks, `dcmftest`. |
+| PACS I/O | `orthanc_client.py`, `pacs_store.py` | Orthanc REST wrapper; `store_to_pacs` (storescu, REST fallback). |
+| Feature lookup | `feature_lookup.py` | `check_pacs_feature` — "does the PACS have any study with tag X (= value)?" |
+| UIDs | `uid_strategy.py` | Deterministic UID generation per `(job_id, index)` — idempotent retries. |
+| Bookkeeping | `job_registry.py`, `audit_log.py`, `token_util.py` | In-memory job status; on-disk audit log (`.pixel-atlas/logs/`); rough token-cost estimate. |
+| Config | `config.py` | All environment-driven paths/credentials — the only file that reads `os.environ`. |
+
+See [mcp-server/README.md](../mcp-server/README.md) for the full per-file
+breakdown.
+
+## 5. MCP tool reference
+
+| Tool | Purpose |
+|---|---|
+| `find_recipe(modality, body_part?, orientation?, enhanced?, contrast?, localizer?)` / `list_recipes(modality?)` | **Check first.** Look up / browse the auto-grown cache of previously-validated KB-authored specs — a hit skips authoring entirely. |
+| `resolve_seed(modality, body_part?, orientation?, enhanced?)` | PACS-first seed resolution. Returns `source_type` `pacs` (call `extract_spec`), `iod` (author from the KB), or `unsupported`. |
+| `extract_spec(study_uid?, path?)` | Turns a **single-series** PACS study or local `.dcm` into a Generation Spec to edit. Refuses multi-series sources (use `modify_dataset`/`generate_prior_study` instead). |
+| `get_iod_requirements(sop_class_uid?, modality?, enhanced?, full?)` | KB lookup: modules + Type-1/1C/2/2C/3 tags for a SOP Class — how the agent grounds itself before authoring `attributes`. Compact by default. |
+| `describe_attributes(names)` | Batch VR/keyword lookup for a list of DICOM keywords or tags. |
+| `validate_spec(spec)` | Grounds an agent-authored/extracted/recipe spec against the KB. On success stores it and returns a `spec_id`; on failure returns specific, actionable errors. |
+| `materialize_dataset(spec_id, instance_count?, job_id?)` | Builds `.dcm` files from a validated spec. Probe-first: fully validates one instance before expanding to N. Auto-saves a recipe on success for KB-authored specs. |
+| `modify_dataset(study_uid, overrides?, per_instance?, regenerate_uids=True, confirm_destructive?)` | Edits every instance of every series of an existing study. Default writes a new derived study; `regenerate_uids=False` is a destructive in-place overwrite and requires `confirm_destructive=True`. |
+| `generate_prior_study(study_uid, days_before, overrides?)` | Clones a study's full structure (every series/instance) for the same patient, dated `days_before` days earlier. Never edits the original. |
+| `validate_dataset(path?, study_uid?)` | IOD conformance + structural checks on a staged folder or a stored study. |
+| `store_to_pacs(path, confirm_store=False)` | Uploads a staged folder to Orthanc. Requires `confirm_store=True`. |
+| `list_pacs_studies(modality?, patient_name?, date_range?)` | List studies in the PACS. |
+| `list_series_instances(study_uid, series_uid?)` | Enumerate stored instances of a study/series — used to get concrete instance UIDs for a PR/KO `references` block. |
+| `check_pacs_feature(tag, value?, modality?, date_range?)` | "Does any stored study have this tag (= value)?" |
+| `get_job_status(job_id)` | Look up a job's state/progress. |
+| `health_check()` | MCP server / Orthanc reachability / DCMTK binaries / KB edition. |
+
+## 6. Multi-series studies
+
+Setting `spec["request"]["attachStudyUID"]` lets a second (or third) series
+be attached to a study a prior call already stored, instead of minting a new
+study every time:
 
 ```mermaid
 flowchart TD
-    A["generate_study(modality=CT, count=50)"] --> B["store_to_pacs"]
-    B --> C["✓ Series 1 stored<br/>study_uid = 1.2.3.4.5"]
-    C --> D["generate_study(modality=CT, count=50,<br/>study_uid=1.2.3.4.5)"]
-    D --> E["store_to_pacs"]
-    E --> F["✓ Series 2 stored, same study"]
-    F --> G{Need PR?}
+    A["Spec (recipe hit or authored),<br/>request.instanceCount=50"] --> AV["validate_spec → materialize_dataset"] --> B["store_to_pacs"]
+    B --> C["Series 1 stored<br/>study_uid = 1.2.3.4.5"]
+    C --> D["Spec with<br/>request.attachStudyUID=1.2.3.4.5"]
+    D --> DV["validate_spec → materialize_dataset"] --> E["store_to_pacs"]
+    E --> F["Series 2 stored, same study,<br/>same patient identity (reused automatically)"]
+    F --> G{Need a PR/KO?}
     G -->|Yes| H["list_series_instances(study_uid, series_uid_1)"]
-    H --> I["[returns instance UIDs]"]
-    I --> J["extract_spec or author spec with<br/>references block"]
-    J --> K["validate_spec → materialize_dataset"]
-    K --> L["store_to_pacs"]
-    L --> M["✓ PR stored, same study"]
-    G -->|No| N["Done"]
+    H --> I["Author a PR/KO spec with a<br/>references block naming those instances"]
+    I --> J["validate_spec → materialize_dataset → store_to_pacs"]
+    G -->|No| K["Done"]
 ```
 
-**Key:** `study_uid` parameter on `generate_study` pins the new series to an existing
-study; identity (PatientID/Name/StudyDate) is reused automatically. `list_series_instances`
-provides the instance UIDs for PR/KO cross-references.
+The study must already be stored before a second series can attach to it —
+`attachStudyUID` is looked up in the PACS, not just reused as a UID string.
+Default interpretation is always "N instances = one series"; the agent asks
+before generating anything if the request implies multiple series (different
+body parts/orientations/modalities, an explicit "N series", or a multi-frame
+ask mixed with a separate single-frame one).
 
-## 5. Deployment architecture
+## 7. Supported IOD family
 
-Deployment:
-VS Code + local (containerized or native) MCP server + Dockerized Orthanc; stdio
-transport for Path A, remote HTTP/SSE for Path B. The redesign adds **no new
-runtime services** — the KB, Spec Validator, Materializer, Spec Extractor, and
-Recipe Store are all in-process modules of the existing MCP server. The only new
-on-disk artifacts are `recipes/` (replacing `templates/`) and the committed KB
-(`mcp-server/kb/2026c/`).
+- **All standard image IODs, single-frame and multi-frame** — CT, MR, US, MG,
+  CR, DX, XA, RF, NM, PT, OCT and their Enhanced/multi-frame variants.
+- **Presentation State (PR)** and **Key Object Selection (KO)** — reference
+  existing instances rather than carrying pixels; the referenced instances
+  must already be stored.
+- **Explicitly refused, never substituted:** Structured Reports (SR), RT
+  objects, Segmentation (SEG), encapsulated documents, waveforms, and other
+  non-image/highly-structured IODs.
 
-## 6. Prerequisites & setup
+## 8. Deployment
 
-No new prerequisites: the KB ships committed in-repo as plain JSON (built once
-from `dicom-validator` + the pydicom data dictionary, both already
-dependencies) — no network fetch or first-run parse delay in any environment.
-`dicom-validator` remains a runtime dependency for the conformance-checking
-engine (`validator.py`'s `DicomFileValidator`), just not for loading the KB
-itself. XML serialization, if enabled, uses a small pure-Python native-model
-converter — no extra native binaries.
+VS Code (or another MCP client) spawns `mcp-server/server.py` as a local
+subprocess over stdio; Orthanc runs in a Docker container. No other runtime
+services — the KB, spec validator, Materializer, and recipe store are all
+in-process modules of the one MCP server. On-disk artifacts: `recipes/`
+(auto-grown recipe cache), `staging/` (scratch output per job), the committed
+KB (`mcp-server/kb/2026c/`), and `.pixel-atlas/logs/` (audit log). See
+[SETUP.md](SETUP.md) for the concrete install steps.
 
-## 7. Token & cost economy (architectural hooks)
+## 9. Token economy (why cost doesn't scale with instance count)
 
-Maps to [solution-design.md §13](solution-design.md#13-repair-loop--token-economy):
+- One Generation Spec per study — never one instruction per instance. The
+  Materializer's N-loop and pixel synthesis run entirely server-side.
+- A recipe hit skips the authoring turn entirely; a miss costs one bounded
+  authoring turn, paid once per request signature, then cached.
+- `validate_spec` is a cheap, deterministic pre-check; the probe-first
+  materialization validates one instance fully before committing to the rest
+  of a large batch.
+- The recipe cache skips authoring entirely for a repeat request.
+- Pixel data and DICOM binaries never enter the chat context — only the
+  small JSON spec/result does.
 
-| Hook | Where |
-|---|---|
-| One O(1) spec per study; N-loop + pixel synthesis in a single `materialize_dataset` call | Materializer |
-| Deterministic `validate_spec` catches grounding errors before any file I/O; bounded repair loop | Spec Validator |
-| Recipe cache short-circuits authoring for repeat requests | Recipe Store |
-| KB responses are compact, structured, cached per session; not re-inlined | KB |
-| Spec (synthetic tag values) and never DICOM binaries/pixels cross to the cloud | Boundary |
-| Validation/report capping + sampling | Validator (unchanged) |
+See [solution-design.md §13](solution-design.md#13-token-economy) for the
+mechanics and measured numbers.
 
-## 8. Extensibility — Path B (hosted)
-
-Path B (hosted) —
-and *better suited* to it: the standard-derived KB and the Recipe Store are
-naturally shared/centralized assets (one KB per standard edition; recipes shared
-across teams). The tool contracts in §3 are exposed over remote HTTP/SSE
-unchanged; the DICOM domain logic (KB, Spec Validator, Materializer) does not
-change with transport.
-
-## 9. Risks & mitigations
+## 10. Risks & mitigations
 
 | Risk | Mitigation |
 |---|---|
-| AI emits an ungrounded/hallucinated tag | `validate_spec` rejects it before materialization; `validate_dataset` is the second gate before store |
-| `dicom-validator` internal KB shape changes on upgrade | Pin the version; isolate all access behind `iod_lookup.py` (single wrapper) |
-| Repair loop burns tokens on a hard request | Bounded retries then fail-loud; recipe cache prevents re-paying for known requests |
-| XML round-trip loses envelope fidelity | Keep JSON canonical; gate XML behind a round-trip test before promoting it |
-| Recipe drift across KB editions | Version recipes by KB edition; invalidate on edition bump |
-| Loss of the hand-review step templates got | Curated recipes can still be committed/PR-reviewed; conformance is enforced by validation regardless |
-| Pixel realism (AI drives tags, not anatomy) | Out of scope — synthetic pixel data is not clinically realistic |
+| AI-authored spec references a hallucinated/wrong tag | `validate_spec` rejects it before any file is written; `validate_dataset` is the second gate before store |
+| A large batch fails conformance late | Probe-first: one instance is fully validated before the other N−1 are generated |
+| `dicom-validator`'s internal data shape changes on upgrade | KB is pinned to one committed edition (`2026c`); all access goes through `iod_lookup.py` |
+| Multi-series structure lost during modify/prior | `modify_dataset`/`generate_prior_study` clone every series via `study_clone.py` rather than reconstructing from one representative instance |
+| Pixel realism | Out of scope by design — synthesized noise/gradient/phantom, not clinically realistic imagery |

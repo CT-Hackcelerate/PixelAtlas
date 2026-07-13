@@ -27,49 +27,26 @@ import orthanc_client
 import seed_builder
 import uid_strategy
 import validator
-from dicom_apply import apply_value_map
+from dicom_apply import apply_per_instance, apply_value_map
 from spec_store import SpecError
 
 SYNTHETIC_NAME_POOL = [
     "DOE^JANE", "DOE^JOHN", "SMITH^ALEX", "PATEL^RIYA", "GARCIA^LUIS",
     "MULLER^ANNA", "NGUYEN^MINH", "KOWALSKI^EWA",
 ]
+SYNTHETIC_PHYSICIAN_POOL = [
+    "REFERRING^ROBERT", "CHEN^WEI", "KUMAR^ANITA", "ROSSI^MARCO", "TANAKA^YUKI",
+]
 
-
-# --- per-instance rule evaluation ------------------------------------------
-def _eval_rule(keyword: str, rule: dict, i: int, ds: pydicom.Dataset):
-    kind = rule.get("rule", "")
-    if kind in ("uid", "index+1") or kind.startswith("index"):
-        if kind == "uid":
-            return None  # UID rules are handled by the UID assignment step
-        offset = rule.get("offset", 1 if kind == "index+1" else 0)
-        return str(i + offset)
-    if kind == "linspace":
-        return str(round(rule.get("start", 0.0) + i * rule.get("step", 1.0), 3))
-    if kind == "derive_from_slice":
-        loc = float(getattr(ds, "SliceLocation", 0.0))
-        return [-150.0, -150.0, loc]
-    if kind == "const":
-        return rule.get("value")
-    raise SpecError(f"Unknown perInstance rule '{kind}' for tag '{keyword}'")
-
-
-def _apply_per_instance(ds: pydicom.Dataset, per_instance: dict, i: int):
-    for keyword, rule in (per_instance or {}).items():
-        if not isinstance(rule, dict):
-            continue
-        value = _eval_rule(keyword, rule, i, ds)
-        if value is not None:
-            apply_value_map(ds, {keyword: value})
 
 
 def _fill_missing_type2(ds: pydicom.Dataset, mandatory: list[dict]):
     """Fill tags safe to synthesize without AI/spec judgement: Type-2 (present,
     empty allowed) always; Type-1C/2C only when mandatory_tags() already
     resolved the tag's condition as true via context (so it's known-required,
-    not a guess) — filled with its first enum value, same as defaults.py's
-    baseline autofill. Missing plain Type-1 tags are NOT raised here — the
-    probe's full validate_dataset (dicom-validator) is the authority, with
+    not a guess) — filled with its first enum value. Missing plain Type-1
+    tags are NOT raised here — the probe's full validate_dataset
+    (dicom-validator) is the authority, with
     precise per-tag messages, and avoids false positives from macro-include
     flattening (e.g. SR content-item macros)."""
     for tag in mandatory:
@@ -95,6 +72,29 @@ def _ds_context(ds: pydicom.Dataset) -> dict:
 
 def _synthetic_identity(rng: random.Random) -> dict:
     return {"PatientName": rng.choice(SYNTHETIC_NAME_POOL), "PatientID": f"SYN{rng.randint(100000, 999999)}"}
+
+
+def _synthetic_study_context(rng: random.Random, req: dict, attributes: dict, overrides: dict) -> dict:
+    """General Study Module (C.7.2.1) tags that are Type-2 (present, empty
+    allowed) — so a from-scratch IOD-authored study would otherwise stamp them
+    blank via _fill_missing_type2 rather than error, and silently look
+    half-empty instead of failing loud. Only relevant with no real source
+    study to inherit them from (an existing-PACS seed already clones these
+    verbatim; see _materialize_single_frame's pacs branch). Every key here is
+    a gap-filler: anything already in attributes/overrides is left alone."""
+    now = datetime.now()
+    candidates = {
+        "StudyDate": now.strftime("%Y%m%d"),
+        "StudyTime": now.strftime("%H%M%S"),
+        "AccessionNumber": f"ACC{rng.randint(1000000, 9999999)}",
+        "StudyID": str(rng.randint(1, 9999)),
+        "ReferringPhysicianName": rng.choice(SYNTHETIC_PHYSICIAN_POOL),
+    }
+    modality, body_part = req.get("modality"), req.get("bodyPart")
+    if modality:
+        candidates["StudyDescription"] = f"{modality} {body_part}" if body_part else modality
+    present = set(attributes) | set(overrides)
+    return {k: v for k, v in candidates.items() if k not in present}
 
 
 def _apply_viewer_safety(ds: pydicom.Dataset, sop_class: str, job_id: str, pixel: dict | None):
@@ -156,9 +156,17 @@ def _resolve_identity(spec: dict, attributes: dict, overrides: dict, rng: random
         return _resolve_prior_identity(req["priorOfStudyUID"], req.get("daysBefore"))
     if req.get("attachStudyUID"):
         return _resolve_same_study_identity(req["attachStudyUID"], attributes, overrides)
+    if (req.get("seedSource") or {}).get("type") == "pacs":
+        # Real study-level tags (StudyDate, AccessionNumber, ...) are already
+        # cloned verbatim from the source instance — nothing synthetic to add.
+        if "PatientID" not in attributes and "PatientID" not in overrides:
+            return _synthetic_identity(rng)
+        return {}
+    # Fresh IOD-authored study: no source to inherit study-level context from.
+    identity = _synthetic_study_context(rng, req, attributes, overrides)
     if "PatientID" not in attributes and "PatientID" not in overrides:
-        return _synthetic_identity(rng)
-    return {}
+        identity.update(_synthetic_identity(rng))
+    return identity
 
 
 def _resolve_prior_identity(prior_of_study_uid: str, days_before: int | None) -> dict:
@@ -220,8 +228,26 @@ def _materialize_single_frame(spec, sop_class, modality, count, job_id, staging_
         if not study_uid:
             raise SpecError("seedSource.type == 'pacs' requires a studyUID")
         base = pydicom.dcmread(io.BytesIO(orthanc_client.fetch_first_instance_bytes(study_uid)))
+        pixel_directive = {
+            "rows": int(getattr(base, "Rows", 64)), "columns": int(getattr(base, "Columns", 64)),
+            "samplesPerPixel": int(getattr(base, "SamplesPerPixel", 1)),
+            "photometricInterpretation": str(getattr(base, "PhotometricInterpretation", "MONOCHROME2")),
+            "bitsAllocated": int(getattr(base, "BitsAllocated", 16)),
+            "bitsStored": int(getattr(base, "BitsStored", getattr(base, "BitsAllocated", 16))),
+            "generator": "noise",
+        }
+        # Resample the real study's slice extent to the *requested* count, rather than
+        # freezing every new instance to this one seed instance's SliceLocation — the
+        # seed instance is only ever a structural template, never the actual anatomy.
+        slice_range = seed.get("sliceRange")
+        if slice_range and "SliceLocation" not in per_instance:
+            start, end = slice_range["start"], slice_range["end"]
+            step = (end - start) / (count - 1) if count > 1 else 0.0
+            per_instance = {**per_instance, "SliceLocation": {"rule": "linspace", "start": start, "step": step}}
+            per_instance.setdefault("ImagePositionPatient", {"rule": "derive_from_slice"})
     else:
         base = seed_builder.build_base(sop_class, modality, spec.get("pixel"))
+        pixel_directive = spec.get("pixel") or {}
 
     apply_value_map(base, attributes)
     apply_value_map(base, identity)
@@ -235,7 +261,11 @@ def _materialize_single_frame(spec, sop_class, modality, count, job_id, staging_
 
     for i in range(count):
         ds = base.copy()
-        _apply_per_instance(ds, per_instance, i)
+        # Never let two instances of the same series share PixelData bytes: regenerate
+        # fresh synthetic pixel content per instance instead of cloning the base's array.
+        pixel_array, _ = seed_builder.synth_pixels(pixel_directive, frame_idx=i)
+        ds.PixelData = pixel_array.tobytes()
+        apply_per_instance(ds, per_instance, i)
         if "InstanceNumber" not in per_instance:
             ds.InstanceNumber = str(i + 1)
         _fill_missing_type2(ds, mandatory)
@@ -260,7 +290,6 @@ def _materialize_single_frame(spec, sop_class, modality, count, job_id, staging_
 def _materialize_classic_mf(spec, sop_class, modality, frames, job_id, staging_dir):
     attributes = spec.get("attributes") or {}
     overrides = spec.get("overrides") or {}
-    cine = spec.get("cine") or {}
     rng = random.Random(job_id)
 
     ds = seed_builder.build_base(sop_class, modality, spec.get("pixel"), frames=frames)
@@ -269,17 +298,16 @@ def _materialize_classic_mf(spec, sop_class, modality, frames, job_id, staging_d
     apply_value_map(ds, overrides)
     _apply_viewer_safety(ds, sop_class, job_id, spec.get("pixel"))
 
-    # Cine + Multi-frame modules (NOT functional groups)
-    cine_rate = cine.get("cineRate") or overrides.get("CineRate") or attributes.get("CineRate")
-    frame_time = cine.get("frameTime")
-    if cine_rate and not frame_time:
-        frame_time = round(1000.0 / float(cine_rate), 3)
-    ds.FrameTime = str(frame_time if frame_time is not None else 33.3)
-    if cine_rate:
-        ds.CineRate = str(cine_rate)
-    ds.FrameIncrementPointer = 0x00181063  # -> FrameTime
+    # Cine Module (C.7.6.5) timing (CineRate/FrameTime/FrameTimeVector/
+    # RecommendedDisplayFrameRate/ActualFrameDuration/FrameIncrementPointer) is
+    # entirely the caller's concern, set above via attributes/overrides like
+    # any other tag — this function makes no decisions about which timing tag
+    # is authoritative. `defaults.baseline_spec` seeds a default FrameTime/
+    # FrameIncrementPointer pair into `attributes` for the one-shot path when
+    # the caller asked for none; the manual spec-authoring flow sets its own.
     ds.NumberOfFrames = frames
-    ds.InstanceNumber = "1"
+    if "InstanceNumber" not in ds:
+        ds.InstanceNumber = "1"
     _fill_missing_type2(ds, kb.mandatory_tags(sop_class, context=_ds_context(ds)))
 
     new_study_uid = (spec.get("request") or {}).get("attachStudyUID") or uid_strategy.new_uid(job_id, "study")
@@ -350,9 +378,12 @@ def _materialize_enhanced_mf(spec, sop_class, modality, frames, job_id, staging_
     dim.FunctionalGroupPointer = 0x00209111
     ds.DimensionIndexSequence = pydicom.Sequence([dim])
 
-    ds.InstanceNumber = "1"
-    ds.ContentDate = "20000101"
-    ds.ContentTime = "120000"
+    if "InstanceNumber" not in ds:
+        ds.InstanceNumber = "1"
+    if "ContentDate" not in ds:
+        ds.ContentDate = "20000101"
+    if "ContentTime" not in ds:
+        ds.ContentTime = "120000"
     _fill_missing_type2(ds, kb.mandatory_tags(sop_class, context=_ds_context(ds)))
 
     new_study_uid = (spec.get("request") or {}).get("attachStudyUID") or uid_strategy.new_uid(job_id, "study")

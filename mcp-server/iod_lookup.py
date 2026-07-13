@@ -32,8 +32,8 @@ import config
 
 _TAG_RE = re.compile(r"^\([0-9A-Fa-f]{4},[0-9A-Fa-f]{4}\)$")
 
-# VR -> generic placeholder for a mandatory tag the AI/spec left unset. Shared
-# with defaults.py (single source of truth) — synthetic test data, so a
+# VR -> generic placeholder for a mandatory tag left unset (used by the
+# functional-group skeleton builder below) — synthetic test data, so a
 # structurally-valid placeholder is acceptable; real values always win when
 # supplied via spec attributes/overrides.
 VR_PLACEHOLDER = {
@@ -304,7 +304,7 @@ def requirements_summary(sop_class_uid: str) -> dict | None:
         "is_multiframe": req["is_multiframe"], "multiframe_kind": multiframe_kind(sop_class_uid),
         "is_reference_object": req["is_reference_object"],
         "modules": modules,
-        "note": "Compact summary. For normal generation use generate_study — you rarely need this.",
+        "note": "Compact summary. Check find_recipe first — a cache hit skips authoring entirely.",
     }
 
 

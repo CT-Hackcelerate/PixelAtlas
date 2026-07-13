@@ -6,19 +6,19 @@ Code, Copilot Chat, or any MCP client). This is the **AI-driven** design: the
 agent authors a Generation Spec grounded on the DICOM Knowledge Base, which a
 deterministic Materializer turns into `.dcm` files. See
 [architecture.md](../docs/architecture.md) and
-[ai-driven-comprehensive-plan.md](../docs/ai-driven-comprehensive-plan.md).
+[solution-design.md](../docs/solution-design.md).
 
 ## Pipeline
 
-**Preferred (one-shot):** `generate_study(modality, count, ...)` → `store_to_pacs`.
-`generate_study` builds a conformant study server-side (defaults + probe-guided
-auto-repair), so the agent makes one call — no spec authoring, no giant IOD dumps,
-no loops.
-
-**Advanced (manual authoring):** `resolve_seed` → (`extract_spec` from PACS, or
-author from KB) → `validate_spec` (→ `spec_id`) → `materialize_dataset`
-(probe-first) → `validate_dataset` → `store_to_pacs`. For editing existing studies
-and PR/KO. Successful KB-authored specs are cached as recipes.
+`find_recipe(modality, body_part, orientation, ...)` first — a cache hit hands
+back a previously-validated Generation Spec, skipping authoring entirely. On a
+miss: `resolve_seed` → (`extract_spec` from a matching PACS study, or author a
+spec from the KB via `get_iod_requirements`/`describe_attributes`) →
+`validate_spec` (→ `spec_id`) → `materialize_dataset` (probe-first) →
+`validate_dataset` → `store_to_pacs`. The same flow covers fresh generation,
+editing existing studies, and PR/KO. Every KB-authored spec that materializes
+successfully is auto-saved as a recipe (`materializer.py`), so the cache grows
+from real usage.
 
 ## Files
 
@@ -29,7 +29,6 @@ and PR/KO. Successful KB-authored specs are cached as recipes.
 | `iod_lookup.py` | **The Knowledge Base.** Loads the **committed** KB JSON (`kb/2026c/dict_info.json`/`iod_info.json`/`module_info.json` — pinned edition, no network, no parse delay) once, shared with `validator.py`; answers `requirements(sop_class)`, `describe(tag)`, `valid_keywords`, `mandatory_tags`, modality↔SOP-Class resolution, and the supported-family / multi-frame / reference-object checks. Also the generic functional-group builder — `macro_skeleton(ref)`/`mandatory_group_macros(sop_class)` walk `group_macros` + nested `items`/`include` to build any modality's mandatory macro structure with zero per-modality Python, and `_cond_holds` resolves Type-1C/2C tags whose condition is already known (e.g. SOPClassUID-based). Backs `get_iod_requirements`/`describe_attributes`. |
 | `spec_store.py` | In-memory store of validated Generation Specs keyed by `spec_id` (the token-saving handle); `apply_diff` for repairs. Owns `SpecError`. |
 | `dicom_apply.py` | Shared value application: `apply_value_map` (keyword→value with strict VR validation) + sequence coercion. Used by the validator and materializer. |
-| `defaults.py` | Per-modality baseline Generation Specs + `autofill_required`/`fill_missing_tags` (probe-guided placeholder fill). What makes `generate_study` a one-shot: conformant study with no agent authoring. |
 | `spec_validator.py` | `validate_spec` — grounds a spec vs the KB (tag existence, VR, IOD validity, pixel-module/UID placement) plus curated cross-tag rules (pixel group, Modality↔SOPClass, geometry). Stores the spec and returns a `spec_id` on success. |
 | `seed_builder.py` | Pixel synthesis (`synth_pixels`: noise/gradient/phantom, single- or multi-frame) and `build_base` — the minimal base dataset for the KB (no-PACS-seed) path. Materializer-owned Image Pixel module. |
 | `materializer.py` | `materialize_dataset(spec_id)` — builds `.dcm` files: single-frame (N files, probe-first), multi-frame (one file; functional-group skeleton built generically from the KB for any modality — CT/MR/PT/future, zero per-modality code), and PR/KO (reference-based, no pixels). Reuses `uid_strategy`, `job_registry`, `orthanc_client`, `seed_builder`, and `validator` (for the probe). Applies viewer-safety defaults, priors, synthetic identity; emits `approx_tokens`; auto-saves a recipe. |

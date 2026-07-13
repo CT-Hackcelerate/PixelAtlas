@@ -36,9 +36,11 @@ def _synth_frame(rows, cols, spp, max_value, dtype, generator, frame_idx=0):
     return arr
 
 
-def synth_pixels(pixel: dict, frames: int = 1) -> tuple[np.ndarray, dict]:
+def synth_pixels(pixel: dict, frames: int = 1, frame_idx: int = 0) -> tuple[np.ndarray, dict]:
     """Return (pixel_array, pixel_module_tags). pixel_array is (rows,cols[,spp]) for
-    one frame or (frames,rows,cols[,spp]) for many."""
+    one frame or (frames,rows,cols[,spp]) for many. `frame_idx` seeds the single-frame
+    case (frames == 1) so callers generating N separate instances get distinct pixel
+    content per instance instead of all reusing frame 0's array."""
     p = {**PIXEL_DEFAULTS, **(pixel or {})}
     rows, cols, spp = int(p["rows"]), int(p["columns"]), int(p["samplesPerPixel"])
     ba = int(p["bitsAllocated"])
@@ -50,7 +52,7 @@ def synth_pixels(pixel: dict, frames: int = 1) -> tuple[np.ndarray, dict]:
         stacked = np.stack([_synth_frame(rows, cols, spp, max_value, dtype, p["generator"], i) for i in range(frames)])
         pixel_array = stacked
     else:
-        pixel_array = _synth_frame(rows, cols, spp, max_value, dtype, p["generator"])
+        pixel_array = _synth_frame(rows, cols, spp, max_value, dtype, p["generator"], frame_idx)
 
     tags = {
         "Rows": rows, "Columns": cols, "SamplesPerPixel": spp,
