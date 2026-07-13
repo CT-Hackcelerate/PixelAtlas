@@ -7,6 +7,14 @@ shorthand. See [sample-prompts.md](sample-prompts.md) for the plainer
 regression-style prompts and [CLAUDE.md](../CLAUDE.md) for the tool contract.
 
 Each prompt below is followed by:
+- **Command** — the slash command that maps to this prompt, if one exists
+  (`/generate`, `/modify`, `/validate`, `/status`, `/list-recipes`,
+  `/check-feature`). Some flows (priors, PR/KO authoring, the advanced
+  extract-and-edit flow) have **no dedicated slash command** — there's no
+  `.claude/commands/*.md` for them — so the plain-English prompt is the only
+  way in; the agent calls the underlying MCP tool(s) directly from the
+  general Pixel Atlas system prompt (`CLAUDE.md`) instead of a scoped
+  command file.
 - **Expect** — what the agent should actually call.
 - **Note** — anything about the tool's current behavior worth knowing before
   you run it live (a caveat, a required follow-up question, or a risk of
@@ -21,6 +29,8 @@ Generate a CT chest study with two series: series 1 should be 40 axial
 slices at 5mm spacing, series 2 should be 20 coronal reformats of the same
 anatomy. Keep them in the same study, same patient.
 ```
+
+**Command:** `/generate`, run twice (once per series).
 
 **Expect:** first `find_recipe`/author a CT axial chest spec
 (`request.instanceCount=40`) → `validate_spec` → `materialize_dataset` →
@@ -44,6 +54,8 @@ Generate an ultrasound study with 3 separate cine-loop series in the same
 study — each series is one multi-frame instance of 50 frames, same patient.
 ```
 
+**Command:** `/generate`, run three times (once per series).
+
 **Expect:** three chained spec authorings for `modality="US"`,
 `request.instanceCount=50` (frames), `enhanced` → `validate_spec` →
 `materialize_dataset` (first with no `attachStudyUID`, the next two with it
@@ -66,6 +78,8 @@ Generate 3 US cine-loop instances (separate series, same study) at 15, 30,
 and 60 fps respectively — set CineRate accordingly on each, and also stamp
 RecommendedFrameRate to match. Each loop is 30 frames.
 ```
+
+**Command:** `/generate`, run three times (once per series).
 
 **Expect:** three chained specs for `modality="US"`,
 `request.instanceCount=30` (frames), each with `attributes` setting
@@ -93,17 +107,23 @@ patient at 30, 90, and 180 days before the study date — each its own
 independent prior study (not chained off each other).
 ```
 
-**Expect:** the advanced spec flow, run three times: `extract_spec(study_uid)`
-→ AI shifts `StudyDate` back by 30/90/180 days respectively (keeping
-PatientID/PatientName) → `validate_spec` → `materialize_dataset` → confirm →
-`store_to_pacs`, three times. Each prior gets its own new
-`StudyInstanceUID` but shares the patient identity with the reference study.
+**Command:** none — there's no dedicated `/prior` slash command; ask in
+plain English and the agent calls `generate_prior_study` directly.
+
+**Expect:** `generate_prior_study(study_uid, days_before=30)`, then again
+with `days_before=90` and `days_before=180` — confirm + `store_to_pacs`
+after each. **This bypasses the spec pipeline entirely** (like
+`modify_dataset`): no `extract_spec`/`validate_spec`/`materialize_dataset`
+involved. `generate_prior_study` clones every series/instance of the source
+study via `study_clone.py`, shifts `StudyDate` back by `days_before`, and
+always produces a new, independent `StudyInstanceUID` that still shares
+`PatientID`/`PatientName` with the reference study.
 
 **Note:** "at specified intervals" isn't a single tool call — there's no
-batch/multi-prior parameter, so expect three distinct generate+confirm+store
-round trips, not one. Say so up front if you want the demo to look like one
-ask with three results, so the audience isn't surprised by three separate
-confirmations.
+batch/multi-prior parameter, so expect three distinct
+call+confirm+store round trips, not one. Say so up front if you want the
+demo to look like one ask with three results, so the audience isn't
+surprised by three separate confirmations.
 
 ---
 
@@ -114,6 +134,8 @@ Generate a 10-slice CT abdomen series with RescaleSlope=2.5, RescaleIntercept
 =-1024, and set WindowCenter/WindowWidth to 40/400 so a viewer applying the
 modality LUT shows a sane soft-tissue window.
 ```
+
+**Command:** `/generate`.
 
 **Expect:** author/reuse a CT abdomen spec (`request.instanceCount=10`) with
 `attributes` set to `{"RescaleSlope": "2.5", "RescaleIntercept": "-1024",
@@ -136,6 +158,8 @@ standard three-component PN format — alphabetic, ideographic, and phonetic
 groups (e.g. "Yamada^Tarou=山田^太郎=やまだ^たろう"), and set
 SpecificCharacterSet so the ideographic/phonetic groups decode correctly.
 ```
+
+**Command:** `/generate`.
 
 **Expect:** author/reuse a CT head spec with `attributes` set to
 `{"PatientName": "Yamada^Tarou=山田^太郎=やまだ^たろう", "SpecificCharacterSet":
@@ -161,6 +185,10 @@ Presentation State (PR) that references the first instance of that series,
 draws a straight-line graphic annotation across the image, and adds a text
 annotation reading "Hello World" near the top-left.
 ```
+
+**Command:** `/generate` for the CT series; the PR itself has no dedicated
+slash command — it's authored manually (`references` block + graphic
+sequences), driven by the plain-English ask.
 
 **Expect:**
 1. Author/reuse a CT chest axial spec (`request.instanceCount=5`) →
@@ -193,6 +221,8 @@ TISSUE", AND add a full VOILUTSequence entry with LUTDescriptor=[4096,
 -1024, 16] (entries, first stored value, bits/entry), a monotonically
 increasing LUTData array, and LUTExplanation="Soft tissue LUT".
 ```
+
+**Command:** `/generate`.
 
 **Expect:** author/reuse a CT abdomen spec (`request.instanceCount=8`) with
 `attributes` set to `{"WindowCenter": "50", "WindowWidth": "350",
@@ -230,6 +260,10 @@ instance's ImagePositionPatient shifted by (+20, +20, 0) mm relative to the
 original, keeping the same slice-to-slice spacing.
 ```
 
+**Command:** none — this needs the advanced manual flow (rewriting
+`perInstance` rules), which no slash command covers; `/modify` only takes
+flat `overrides`/`per_instance` value maps, not rule edits like this.
+
 **Expect (both):** `extract_spec(study_uid)` → AI edits the `perInstance`
 rule for `ImagePositionPatient`/`SliceLocation` (rule kinds available:
 `linspace`, `derive_from_slice`, `index+1`, `const`) → `validate_spec` →
@@ -246,7 +280,7 @@ just less of a beaten path than 9a.
 
 ---
 
-## 10. Derive an MR study from an existing one, tweak a few critical tags
+## 10. Modify — tweak a few tags on an existing MR study, non-destructively
 
 ```
 Take study <study_uid> (an existing MR study) and create a new derived study
@@ -254,22 +288,87 @@ with MagneticFieldStrength=3.0, RepetitionTime=2000, EchoTime=30, and
 Manufacturer="AcmeMR" — everything else should stay as in the source study.
 ```
 
-**Expect:** this is the `/modify` flow: locate the study → `extract_spec` →
-apply the four overrides → `validate_spec` → `modify_dataset` (or
-`materialize_dataset`, depending on which path the agent takes) →
-`validate_dataset` → confirm → `store_to_pacs`. Ask explicitly for a **new
-derived study** so the agent uses `regenerate_uids=true` rather than asking
-you to choose (or it will ask, per the golden rules — that's expected too).
+**Command:** `/modify`.
 
-**Note:** straightforward — all four tags are plain overridable attributes,
-no sequences or per-instance rules involved. Good "boring but reliable"
-prompt to run first in a demo before the fancier PR/VOI LUT ones.
+**Expect:** locate the study (`list_pacs_studies` if not named directly) →
+check the four tags are valid for the study's actual IOD
+(`get_iod_requirements`/`describe_attributes`) → `modify_dataset(study_uid,
+overrides={"MagneticFieldStrength": "3.0", "RepetitionTime": "2000",
+"EchoTime": "30", "Manufacturer": "AcmeMR"}, regenerate_uids=true)` →
+`validate_dataset(path=output_path)` → confirm → `store_to_pacs`.
+**`modify_dataset` is a self-contained tool — it never calls
+`extract_spec`/`validate_spec`/`materialize_dataset`.** It fetches every
+instance of every series directly via `study_clone.py` and applies the
+overrides in one pass.
+
+**Note:** ask explicitly for a **new derived study**, as above, so the
+agent uses `regenerate_uids=true` rather than asking you to choose (or it
+will ask, per the golden rules — that's expected too). Straightforward: all
+four tags are plain overridable attributes, no sequences or per-instance
+rules involved. Good "boring but reliable" prompt to run first in a demo
+before the fancier PR/VOI LUT ones.
+
+---
+
+## 11. Modify — per-instance renumbering across an existing series
+
+```
+Study <study_uid> has one CT series. Rename its SeriesDescription to
+"Re-reviewed — QA pass 2" and renumber AcquisitionNumber sequentially
+starting at 100 (100, 101, 102, ...) across every instance. Keep it as a
+new derived study.
+```
+
+**Command:** `/modify`.
+
+**Expect:** `modify_dataset(study_uid, overrides={"SeriesDescription":
+"Re-reviewed — QA pass 2"}, per_instance={"AcquisitionNumber": {"rule":
+"index+1", "start": 100}}, regenerate_uids=true)` → `validate_dataset` →
+confirm → `store_to_pacs`. `SeriesDescription` is uniform (`overrides`);
+`AcquisitionNumber` varies per instance (`per_instance`) — same
+uniform-vs-varying split the spec-authoring flow uses for `attributes` vs
+`perInstance`, just under `modify_dataset`'s own parameter names.
+
+**Note:** good demo of `modify_dataset`'s `per_instance` parameter, which is
+easy to overlook next to the more commonly-shown flat `overrides`. Per-
+instance rules here are re-applied within each original series in
+instance-number order — a multi-series source study would renumber each
+series independently starting at 100, not continue the count across series.
+
+---
+
+## 12. Modify — attempt to change a protected tag, to show the refusal path
+
+```
+Take study <study_uid> and change its Rows to 1024 and its SOPClassUID to
+1.2.840.10008.5.1.4.1.1.4 (MR Image Storage) — I want to see what happens
+when you ask for something modify isn't allowed to do.
+```
+
+**Command:** `/modify`.
+
+**Expect:** the agent should recognize (or `modify_dataset` should reject)
+`Rows` (Image Pixel module — pixel data would no longer match) and
+`SOPClassUID` (a structural identifier, not a user override) as protected
+tags and refuse before or via the tool call, reporting exactly which tags
+are disallowed and why — not silently drop them and modify only the
+allowed ones without saying so.
+
+**Note:** good companion to #10/#11 — shows the same guardrail
+`validate_spec` enforces for fresh generation (pixel-module/UID tags
+rejected in `attributes`) also holds for the modify path, even though
+`modify_dataset` never touches the spec pipeline. If the agent instead
+silently ignores the two bad tags and reports success, that's a bug worth
+flagging, not expected behavior.
 
 ---
 
 ## Bonus prompts (impactful, not in the original list)
 
 **A. Full workflow in one breath — generate → validate → check-feature:**
+
+**Command:** `/generate` → `/validate` → `/check-feature`, chained in one ask.
+
 ```
 Generate a 20-slice CT chest series, validate it, store it to PACS, then
 tell me whether ModalityLUTSequence is present anywhere in it.
@@ -279,6 +378,10 @@ chain end to end with a single ask, and shows off `check_pacs_feature`
 resolving a plain-English question ("Modality LUT") to the right keyword.
 
 **B. Key Object Selection tying two series together:**
+
+**Command:** `/generate`, run twice for the two series; the KO itself has no
+dedicated slash command (same as PR in #7) — authored manually.
+
 ```
 Generate two CT series in one study (axial, 10 slices each — call them
 series A and series B). Then create a Key Object Selection document titled
@@ -290,6 +393,9 @@ Good companion demo to #7 — shows the KO branch of the reference-object flow
 solution-design.md).
 
 **C. Destructive in-place overwrite, shown deliberately:**
+
+**Command:** `/modify`.
+
 ```
 Overwrite study <study_uid> in place: change PatientAge to 077Y. Do not
 create a new study — I want to see the destructive-overwrite confirmation
@@ -301,6 +407,9 @@ confirm_destructive=true)` → separate store confirmation) rather than
 letting an audience assume `/modify` is always non-destructive.
 
 **D. A deliberately-ambiguous prompt, to show the agent asking back:**
+
+**Command:** none — plain English only, same as #4.
+
 ```
 Generate a prior study based on <study_uid>.
 ```
@@ -310,6 +419,10 @@ invent a default where none is sensible (already called out in
 sample-prompts.md §2).
 
 **E. An intentionally out-of-scope ask, to show the refusal path:**
+
+**Command:** `/generate` (the request maps to it, but the agent should
+refuse before calling any tool that would misrepresent the result).
+
 ```
 Generate an RTSTRUCT for study <study_uid> outlining the liver.
 ```
