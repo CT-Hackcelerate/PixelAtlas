@@ -38,7 +38,11 @@ def resolve_seed(modality: str, body_part: str | None = None, orientation: str |
     if body_part:
         candidates = [c for c in candidates if body_part.upper() in (c.get("description") or "").upper()]
     if orientation:
-        candidates = [c for c in candidates if orientation.lower() in (c.get("description") or "").lower()]
+        # Soft refinement only: most real StudyDescriptions don't encode orientation
+        # at all, so a non-match shouldn't zero out otherwise-good body_part matches.
+        oriented = [c for c in candidates if orientation.lower() in (c.get("description") or "").lower()]
+        if oriented:
+            candidates = oriented
 
     if candidates:
         return {
