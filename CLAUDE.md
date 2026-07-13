@@ -67,7 +67,10 @@ per-instance expansion).
      at most the real count, or drop the PACS seed and author a fresh
      IOD-path spec instead (synthetic pixel data, any count). Don't call
      `materialize_dataset` with a too-high count hoping it'll work — the
-     server blocks it outright.
+     server blocks it outright. Same principle for multi-frame (classic
+     cine / enhanced): the real source instance's actual `NumberOfFrames`
+     is the ceiling — requested frames ≤ real frames clones real pixel data
+     per frame; requested frames > real frames is blocked the same way.
    - `source_type: "iod"` → `get_iod_requirements(modality, enhanced?)`
      (compact form — do not pass `full=true` unless a repair truly needs the
      detailed VR/enum dump) to see the mandatory modules/tags; use

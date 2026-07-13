@@ -19,6 +19,7 @@ import uuid
 from datetime import datetime, timedelta
 
 import pydicom
+from pydicom.uid import ExplicitVRLittleEndian
 
 import config
 import iod_lookup as kb
@@ -295,17 +296,52 @@ def _materialize_single_frame(spec, sop_class, modality, count, job_id, staging_
     return {"study_uid": new_study_uid, "series_uid": new_series_uid, "count": count}
 
 
+# --- shared: PACS-seeded multi-frame source (real frame cloning) -----------
+def _load_real_frame_source(seed: dict, frames: int) -> pydicom.Dataset | None:
+    """For a PACS-seeded multi-frame spec, fetch the real source instance and verify
+    it has at least `frames` real frames to clone pixel data from. Raises SpecError
+    (block) rather than fabricating frames beyond what the PACS study actually has."""
+    if seed.get("type") != "pacs":
+        return None
+    study_uid = seed.get("studyUID")
+    if not study_uid:
+        raise SpecError("seedSource.type == 'pacs' requires a studyUID")
+    ordered_real = orthanc_client.list_instances_ordered(study_uid)
+    if not ordered_real:
+        raise SpecError(f"PACS study '{study_uid}' has no stored instances to clone from")
+    real_ds = pydicom.dcmread(io.BytesIO(orthanc_client.fetch_instance_bytes(ordered_real[0]["orthanc_id"])))
+    real_frame_count = int(getattr(real_ds, "NumberOfFrames", 1))
+    if frames > real_frame_count:
+        raise SpecError(
+            f"Requested {frames} frames but PACS seed study '{study_uid}' only has "
+            f"{real_frame_count} real frames to clone pixel data from. Reduce the frame "
+            f"count to at most {real_frame_count}, or author an IOD-path spec (no PACS "
+            "seed) to synthesize pixel data for a larger count."
+        )
+    return real_ds
+
+
 # --- branch: classic multi-frame (US Multi-frame / XA — Cine + NumberOfFrames) ---
 def _materialize_classic_mf(spec, sop_class, modality, frames, job_id, staging_dir):
     attributes = spec.get("attributes") or {}
     overrides = spec.get("overrides") or {}
+    seed = (spec.get("request") or {}).get("seedSource") or {}
     rng = random.Random(job_id)
 
-    ds = seed_builder.build_base(sop_class, modality, spec.get("pixel"), frames=frames)
+    real_ds = _load_real_frame_source(seed, frames)
+    if real_ds is not None:
+        # Clone only the first `frames` of the real source's actual pixel data; the
+        # decompressed bytes we write no longer match the source's transfer syntax.
+        real_ds.PixelData = real_ds.pixel_array[:frames].tobytes()
+        real_ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+        ds = real_ds
+    else:
+        ds = seed_builder.build_base(sop_class, modality, spec.get("pixel"), frames=frames)
     apply_value_map(ds, attributes)
     apply_value_map(ds, _resolve_identity(spec, attributes, overrides, rng))
     apply_value_map(ds, overrides)
-    _apply_viewer_safety(ds, sop_class, job_id, spec.get("pixel"))
+    if real_ds is None:
+        _apply_viewer_safety(ds, sop_class, job_id, spec.get("pixel"))
 
     # Cine Module (C.7.6.5) timing (CineRate/FrameTime/FrameTimeVector/
     # RecommendedDisplayFrameRate/ActualFrameDuration/FrameIncrementPointer) is
@@ -339,14 +375,29 @@ def _materialize_enhanced_mf(spec, sop_class, modality, frames, job_id, staging_
     attributes = spec.get("attributes") or {}
     overrides = spec.get("overrides") or {}
     mf = spec.get("multiFrame") or {}
+    seed = (spec.get("request") or {}).get("seedSource") or {}
     rng = random.Random(job_id)
 
+    real_ds = _load_real_frame_source(seed, frames)
+
+    # The enhanced skeleton (functional groups, dimension organization) is always
+    # built fresh — the KB-driven macro machinery below needs it regardless of
+    # seed source. On a PACS seed, only the actual pixel bytes + pixel-module tags
+    # are overwritten with the real source's cloned data afterward.
     ds = seed_builder.build_base(sop_class, modality, spec.get("pixel"),
                                  frames=frames, include_frame_of_reference=True)
+    if real_ds is not None:
+        ds.PixelData = real_ds.pixel_array[:frames].tobytes()
+        for kw in ("Rows", "Columns", "SamplesPerPixel", "PhotometricInterpretation",
+                   "BitsAllocated", "BitsStored", "HighBit", "PixelRepresentation", "PlanarConfiguration"):
+            if hasattr(real_ds, kw):
+                setattr(ds, kw, getattr(real_ds, kw))
+
     apply_value_map(ds, attributes)
     apply_value_map(ds, _resolve_identity(spec, attributes, overrides, rng))
     apply_value_map(ds, overrides)
-    _apply_viewer_safety(ds, sop_class, job_id, spec.get("pixel"))
+    if real_ds is None:
+        _apply_viewer_safety(ds, sop_class, job_id, spec.get("pixel"))
 
     # Shared Functional Groups: the generic multi-frame macros (frame-invariant
     # geometry) plus, from the KB, whatever *other* functional-group macros this
