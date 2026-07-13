@@ -17,7 +17,7 @@ import pydicom
 
 import iod_lookup as kb
 import spec_store
-from dicom_apply import apply_value_map
+from dicom_apply import KNOWN_RULE_KINDS, apply_value_map
 from spec_store import SpecError
 
 _ALLOWED_GENERATORS = {"noise", "gradient", "phantom"}
@@ -95,8 +95,19 @@ def validate_spec(spec: dict) -> dict:
     if declared_modality and expected_modality and str(declared_modality).upper() != expected_modality:
         errors.append({"tag": "Modality", "reason": f"Modality={declared_modality} disagrees with SOP Class {sop_class} (expected {expected_modality})"})
 
-    # geometry triplet completeness (warning)
+    # perInstance shape check — each rule must be {"rule": <kind>, ...}; a bare
+    # string/list here would otherwise pass validation silently, then either
+    # no-op at materialize time (apply_per_instance used to skip non-dicts) or
+    # leave a mandatory tag unset in a way that only fails deep in a later
+    # structural check with no reference back to the actual mistake.
     per_instance = spec.get("perInstance") or {}
+    for keyword, rule in per_instance.items():
+        if not isinstance(rule, dict):
+            errors.append({"tag": keyword, "reason": f"perInstance['{keyword}'] must be a rule object like {{'rule': 'index+1'}}, got {rule!r}"})
+        elif rule.get("rule") not in KNOWN_RULE_KINDS and not str(rule.get("rule", "")).startswith("index"):
+            errors.append({"tag": keyword, "reason": f"perInstance['{keyword}'].rule={rule.get('rule')!r} is not a known rule kind (one of {sorted(KNOWN_RULE_KINDS)})"})
+
+    # geometry triplet completeness (warning)
     geo_present = {g for g in ("ImageOrientationPatient", "ImagePositionPatient", "PixelSpacing")
                   if g in attributes or g in per_instance}
     if geo_present and not kb.is_reference_object(sop_class):

@@ -56,6 +56,14 @@ def apply_value_map(ds: pydicom.Dataset, mapping: dict) -> None:
 # Shared by fresh IOD-authored generation (materializer.py) and PACS-sourced
 # edits (modify.py) — same rule language either way: a keyword->rule map,
 # evaluated per instance index `i` against that instance's own dataset `ds`.
+# A rule is always a dict with a "rule" key naming one of KNOWN_RULE_KINDS —
+# spec_validator checks this shape at validate_spec time so a malformed rule
+# is caught with a clear message instead of surfacing later as a silently
+# no-op tag (or, worse, a cryptic crash once a downstream consumer assumes
+# the tag was actually set).
+KNOWN_RULE_KINDS = {"uid", "index+1", "linspace", "derive_from_slice", "const", "increment"}
+
+
 def eval_rule(keyword: str, rule: dict, i: int, ds: pydicom.Dataset):
     kind = rule.get("rule", "")
     if kind in ("uid", "index+1") or kind.startswith("index"):
@@ -90,7 +98,10 @@ def eval_rule(keyword: str, rule: dict, i: int, ds: pydicom.Dataset):
 def apply_per_instance(ds: pydicom.Dataset, per_instance: dict, i: int) -> None:
     for keyword, rule in (per_instance or {}).items():
         if not isinstance(rule, dict):
-            continue
+            raise SpecError(
+                f"perInstance['{keyword}'] must be a rule object like {{'rule': 'index+1'}}, "
+                f"got {rule!r}"
+            )
         value = eval_rule(keyword, rule, i, ds)
         if value is not None:
             apply_value_map(ds, {keyword: value})

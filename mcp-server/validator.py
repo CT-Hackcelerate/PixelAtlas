@@ -77,7 +77,7 @@ def _structural_checks(files: list[Path]) -> tuple[list[str], list[str]]:
         if sop_uid in sop_uids:
             errors.append(f"{f.name}: duplicate SOPInstanceUID {sop_uid}")
         sop_uids.add(sop_uid)
-        by_series[series_uid].append((int(getattr(ds, "InstanceNumber", 0)), f.name))
+        by_series[series_uid].append((int(getattr(ds, "InstanceNumber", 0) or 0), f.name))
         # Reference objects (PR/KO) legitimately carry no pixel data.
         if not iod_lookup.is_reference_object(str(getattr(ds, "SOPClassUID", ""))) and not getattr(ds, "PixelData", None):
             errors.append(f"{f.name}: missing PixelData")
@@ -153,7 +153,7 @@ def _materialize_study(study_uid: str) -> Path:
     # sort by the actual tag (same fix as modify.py) so the InstanceNumber-ordering
     # structural check reflects the real sequence, not Orthanc's storage order.
     datasets_by_id = {iid: pydicom.dcmread(io.BytesIO(orthanc_client.fetch_instance_bytes(iid))) for iid in instance_ids}
-    ordered_ids = sorted(datasets_by_id, key=lambda iid: int(getattr(datasets_by_id[iid], "InstanceNumber", 0)))
+    ordered_ids = sorted(datasets_by_id, key=lambda iid: int(getattr(datasets_by_id[iid], "InstanceNumber", 0) or 0))
 
     out_dir = config.STAGING_DIR / f"validate-{uuid.uuid4().hex[:8]}"
     out_dir.mkdir(parents=True, exist_ok=True)
