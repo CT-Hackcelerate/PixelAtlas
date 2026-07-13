@@ -223,28 +223,26 @@ def _materialize_single_frame(spec, sop_class, modality, count, job_id, staging_
     identity = _resolve_identity(spec, attributes, overrides, rng)
 
     # base dataset
+    ordered_real = None
     if seed.get("type") == "pacs":
         study_uid = seed.get("studyUID")
         if not study_uid:
             raise SpecError("seedSource.type == 'pacs' requires a studyUID")
-        base = pydicom.dcmread(io.BytesIO(orthanc_client.fetch_first_instance_bytes(study_uid)))
-        pixel_directive = {
-            "rows": int(getattr(base, "Rows", 64)), "columns": int(getattr(base, "Columns", 64)),
-            "samplesPerPixel": int(getattr(base, "SamplesPerPixel", 1)),
-            "photometricInterpretation": str(getattr(base, "PhotometricInterpretation", "MONOCHROME2")),
-            "bitsAllocated": int(getattr(base, "BitsAllocated", 16)),
-            "bitsStored": int(getattr(base, "BitsStored", getattr(base, "BitsAllocated", 16))),
-            "generator": "noise",
-        }
-        # Resample the real study's slice extent to the *requested* count, rather than
-        # freezing every new instance to this one seed instance's SliceLocation — the
-        # seed instance is only ever a structural template, never the actual anatomy.
-        slice_range = seed.get("sliceRange")
-        if slice_range and "SliceLocation" not in per_instance:
-            start, end = slice_range["start"], slice_range["end"]
-            step = (end - start) / (count - 1) if count > 1 else 0.0
-            per_instance = {**per_instance, "SliceLocation": {"rule": "linspace", "start": start, "step": step}}
-            per_instance.setdefault("ImagePositionPatient", {"rule": "derive_from_slice"})
+        # Real per-instance pixel data is cloned untouched (no synthesis) for as many
+        # instances as the source study actually has — never fabricated beyond that.
+        ordered_real = orthanc_client.list_instances_ordered(study_uid)
+        real_count = len(ordered_real)
+        if real_count == 0:
+            raise SpecError(f"PACS study '{study_uid}' has no stored instances to clone from")
+        if count > real_count:
+            raise SpecError(
+                f"Requested {count} instances but PACS seed study '{study_uid}' only has "
+                f"{real_count} real instances to clone pixel data from. Reduce instance_count "
+                f"to at most {real_count}, or author an IOD-path spec (no PACS seed) to "
+                "synthesize pixel data for a larger count."
+            )
+        base = pydicom.dcmread(io.BytesIO(orthanc_client.fetch_instance_bytes(ordered_real[0]["orthanc_id"])))
+        pixel_directive = None
     else:
         base = seed_builder.build_base(sop_class, modality, spec.get("pixel"))
         pixel_directive = spec.get("pixel") or {}
@@ -260,11 +258,22 @@ def _materialize_single_frame(spec, sop_class, modality, count, job_id, staging_
     new_series_uid = uid_strategy.new_uid(job_id, "series")
 
     for i in range(count):
-        ds = base.copy()
-        # Never let two instances of the same series share PixelData bytes: regenerate
-        # fresh synthetic pixel content per instance instead of cloning the base's array.
-        pixel_array, _ = seed_builder.synth_pixels(pixel_directive, frame_idx=i)
-        ds.PixelData = pixel_array.tobytes()
+        if ordered_real is not None:
+            # Clone the i-th real source instance's own pixel data + geometry as-is;
+            # only re-apply attributes/identity/overrides on top (base already has them).
+            ds = base.copy() if i == 0 else pydicom.dcmread(
+                io.BytesIO(orthanc_client.fetch_instance_bytes(ordered_real[i]["orthanc_id"]))
+            )
+            if i > 0:
+                apply_value_map(ds, attributes)
+                apply_value_map(ds, identity)
+                apply_value_map(ds, overrides)
+        else:
+            ds = base.copy()
+            # Never let two instances of the same series share PixelData bytes: regenerate
+            # fresh synthetic pixel content per instance instead of cloning the base's array.
+            pixel_array, _ = seed_builder.synth_pixels(pixel_directive, frame_idx=i)
+            ds.PixelData = pixel_array.tobytes()
         apply_per_instance(ds, per_instance, i)
         if "InstanceNumber" not in per_instance:
             ds.InstanceNumber = str(i + 1)

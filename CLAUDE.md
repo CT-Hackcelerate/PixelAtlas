@@ -57,6 +57,17 @@ per-instance expansion).
    - `resolve_seed(modality, body_part?, orientation?, enhanced?)`.
    - `source_type: "pacs"` → `extract_spec(study_uid=<candidate>)` to get a
      real, already-conformant spec to start from (preferred when available).
+     On this path the Materializer clones each instance's **real pixel
+     data** from the source study — it never fabricates additional real
+     images. Check `seedSource.sliceRange.count` (the real instance count)
+     against the requested count before calling `materialize_dataset`: tell
+     the user what was found (study + real instance count), then —
+     requested ≤ real → proceed (it's doable, real pixel data all the way);
+     requested > real → stop and ask the user to either lower the count to
+     at most the real count, or drop the PACS seed and author a fresh
+     IOD-path spec instead (synthetic pixel data, any count). Don't call
+     `materialize_dataset` with a too-high count hoping it'll work — the
+     server blocks it outright.
    - `source_type: "iod"` → `get_iod_requirements(modality, enhanced?)`
      (compact form — do not pass `full=true` unless a repair truly needs the
      detailed VR/enum dump) to see the mandatory modules/tags; use

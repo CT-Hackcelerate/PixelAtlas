@@ -139,6 +139,39 @@ def list_instance_geometry(study_uid: str, timeout: float = 10.0) -> list[dict]:
     return [{"instance_number": n, "slice_location": s} for n, s in geo]
 
 
+def list_instances_ordered(study_uid: str, timeout: float = 10.0) -> list[dict]:
+    """Every real instance of a study (Orthanc ID + geometry), sorted by SliceLocation
+    (falling back to InstanceNumber) — used to clone genuine per-instance pixel data
+    when materializing from a PACS seed, instead of synthesizing noise per instance."""
+    body = {
+        "Level": "Instance",
+        "Query": {"StudyInstanceUID": study_uid},
+        "Expand": True,
+        "RequestedTags": ["InstanceNumber", "SliceLocation", "SOPInstanceUID"],
+    }
+    resp = _session().post(f"{config.ORTHANC_URL}/tools/find", json=body, timeout=timeout)
+    resp.raise_for_status()
+    rows = []
+    for entry in resp.json():
+        tags = entry.get("RequestedTags", {})
+        try:
+            inst_num = int(tags.get("InstanceNumber") or 0)
+        except ValueError:
+            inst_num = 0
+        try:
+            slice_loc = float(tags["SliceLocation"]) if tags.get("SliceLocation") not in (None, "") else None
+        except ValueError:
+            slice_loc = None
+        rows.append({
+            "orthanc_id": entry.get("ID"),
+            "sop_instance_uid": tags.get("SOPInstanceUID", ""),
+            "instance_number": inst_num,
+            "slice_location": slice_loc,
+        })
+    rows.sort(key=lambda r: r["slice_location"] if r["slice_location"] is not None else r["instance_number"])
+    return rows
+
+
 def get_first_instance_id(study_uid: str, timeout: float = 10.0) -> str:
     """Resolve a study's Orthanc instance ID for its first stored instance."""
     instance_ids = list_instance_ids(study_uid, timeout)
@@ -165,9 +198,6 @@ def get_instance_tags(instance_id: str, timeout: float = 10.0) -> dict:
     return resp.json()
 
 
-def fetch_first_instance_bytes(study_uid: str, timeout: float = 15.0) -> bytes:
-    """Fetch the raw DICOM bytes of one instance from a study, to use as a clone seed."""
-    return fetch_instance_bytes(get_first_instance_id(study_uid, timeout), timeout)
 
 
 def list_series_instances(study_uid: str, series_uid: str | None = None, timeout: float = 10.0) -> list[dict]:
