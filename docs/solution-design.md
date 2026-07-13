@@ -94,7 +94,7 @@ sequenceDiagram
     Agent->>MCP: "validate_spec(spec) with overrides PatientAge=034Y applied"
     MCP-->>Agent: grounded=true, spec_id returned
     Agent->>MCP: materialize_dataset(spec_id, instance_count=200)
-    Note over MCP: probe-first, bounded auto-repair if the probe fails;<br/>auto-saves a recipe on success (KB-authored path)
+    Note over MCP: probe-first, bounded auto-repair if the probe fails,<br/>auto-saves a recipe on success (KB-authored path)
     MCP-->>Agent: job_id, study_uid, count, output_path, validation, approx_tokens
     Agent-->>User: "confirm plan (count over 50)"
     User-->>Agent: confirm
