@@ -21,9 +21,43 @@ real, standards-conformant DICOM files and drops them into a local test PACS
 Nothing here touches real patient data. Everything is synthetic, generated
 on your machine.
 
+**Try it right now** (once [SETUP.md](SETUP.md) is done): open Claude Code
+or Copilot Chat in this repo and type
+
+```
+Generate 3 axial CT chest instances
+```
+
+Everything below explains what happens between you pressing Enter and a
+study showing up at http://localhost:8042.
+
 ---
 
-## 2. The two halves: "the AI" and "the MCP server"
+## 2. The restaurant analogy
+
+If the tool names feel abstract, here's a mental model that maps cleanly
+onto how this actually works:
+
+| Restaurant | Pixel Atlas |
+|---|---|
+| You, ordering in plain English ("I'll have the steak, medium rare") | You, prompting the agent ("Generate 20 CT slices") |
+| The waiter — translates your order into a ticket the kitchen understands, and never cooks anything themselves | The AI agent (Claude Code / Copilot) — turns your request into a Generation Spec (a JSON "order ticket"), never touches a `.dcm` file itself |
+| The recipe book behind the pass — exact, unambiguous instructions for every dish on the menu | The **Knowledge Base** (`mcp-server/kb/`) — exact tag/module requirements for every DICOM scan type |
+| The kitchen expediter, checking the ticket against the recipe book before anyone starts cooking | `validate_spec` — checks the ticket (spec) against the rulebook (KB) *before* any file is built |
+| The kitchen itself — same steps, same result, every single time, no improvisation | `materialize_dataset` — deterministic Python: builds pixels, assigns UIDs, writes files |
+| The health inspector, checking the finished plate before it leaves the kitchen | `validate_dataset` — full DICOM conformance check before anything is stored |
+| The pass window, where the finished dish reaches your table | `store_to_pacs` — uploads the finished files into Orthanc |
+| A regular you order every week — the kitchen already knows it by heart | A **recipe cache** hit — a previously-validated spec is reused instead of authored from scratch |
+
+The one rule that keeps this restaurant running well: **the waiter writes
+the ticket, the kitchen builds the dish — the waiter never touches the
+stove.** That division (decide *what* vs. do the *how*) is the whole reason
+this project is split into an AI half and a Python half. Section 3 unpacks
+why that split matters beyond the analogy.
+
+---
+
+## 3. The two halves: "the AI" and "the MCP server"
 
 Think of this project as two cooperating halves, split for a specific reason:
 **cost and correctness**.
@@ -51,6 +85,18 @@ This is exactly what **`CLAUDE.md`** (the project's root instruction file)
 enforces: "Check `find_recipe` before authoring... you author the spec; the
 server only grounds and builds," and "Never loop" if something errors.
 
+```mermaid
+flowchart LR
+    U(("You")) -- "plain English" --> AI["AI agent<br/>(the waiter)"]
+    AI -- "Generation Spec (JSON)" --> MCP["MCP server<br/>(the kitchen)"]
+    MCP -- "result JSON" --> AI
+    AI -- "summary" --> U
+    MCP --> PACS[("Orthanc PACS<br/>(the table)")]
+```
+
+The AI never sees a `.dcm` byte and the server never invents a tag value —
+only short JSON crosses that line in either direction.
+
 ### What is "MCP" then?
 
 **MCP (Model Context Protocol)** is just the plumbing that lets an AI agent
@@ -69,12 +115,13 @@ flow back to the AI → the AI summarizes them for you.**
 
 ---
 
-## 3. Why so many files in `mcp-server/`?
+## 4. Why so many files in `mcp-server/`?
 
-Because the work has several genuinely distinct concerns, and each file owns
-exactly one of them. This is a normal Python "one module = one
-responsibility" layout — not something specific to AI/MCP. A rough mental
-model, grouped by role:
+A commercial kitchen doesn't have one person grilling, plating, washing
+dishes, *and* answering the phone — each station owns one job, so the whole
+place doesn't stall when one thing changes. `mcp-server/` is the same idea:
+several genuinely distinct concerns, each owned by exactly one file. A rough
+mental model, grouped by role:
 
 ```
 Entry point         → server.py               (registers all MCP tools)
@@ -115,15 +162,19 @@ This is checked-in, static JSON data derived from the real DICOM standard
 (via `pydicom`/`dicom_validator`), pinned to standard edition "2026c". It's
 the authoritative answer to "what tags does a CT image require? what SOP
 Class is 'Enhanced CT'? what VR does `KVP` have?" `iod_lookup.py` loads this
-once and nearly every other module consults it. This replaced an earlier
-design (superseded planning docs are kept in `docs/archive/` for history)
-that used hand-authored per-scan-type YAML templates — the KB approach is
-more general and doesn't need a new template every time someone asks for a
-new modality/combination.
+once and nearly every other module consults it.
+
+This replaced an earlier design that used hand-authored per-scan-type YAML
+templates — the equivalent of a restaurant that could only cook dishes
+someone had pre-written a recipe card for, and had to stop and write a new
+card by hand every time a customer asked for something new. The KB approach
+means the kitchen can cook *anything the DICOM standard defines*, on the
+first ask — no "sorry, no recipe for that yet." (Superseded planning docs
+about that migration are kept in `docs/archive/` for history only.)
 
 ---
 
-## 4. The MCP tools (what the AI can actually call)
+## 5. The MCP tools (what the AI can actually call)
 
 These are the "buttons" the AI can press. Each is implemented in `server.py`,
 which delegates to the module that actually owns that logic.
@@ -147,7 +198,7 @@ which delegates to the module that actually owns that logic.
 
 ---
 
-## 5. Slash commands (`.claude/commands/*.md`)
+## 6. Slash commands (`.claude/commands/*.md`)
 
 These are shortcuts you can type directly (e.g. `/generate`) that give the
 AI a pre-written recipe for a common task, including which tools to call and
@@ -171,9 +222,39 @@ the rules in `CLAUDE.md` plus whichever slash command you invoke.
 
 ---
 
-## 6. Putting it together: one request, start to finish
+## 7. Putting it together: one request, start to finish
 
-Example: **"Generate a CT study with 20 instances."**
+Example: **"Generate a CT study with 20 instances."** Following it end to
+end is the fastest way to make everything above click.
+
+```mermaid
+sequenceDiagram
+    actor You
+    participant AI as AI agent
+    participant MCP as MCP server
+    participant PACS as Orthanc
+
+    You->>AI: "Generate a CT study with 20 instances"
+    AI->>MCP: find_recipe(modality="CT")
+    alt cache hit
+        MCP-->>AI: cached spec
+    else cache miss
+        AI->>MCP: resolve_seed / get_iod_requirements("CT")
+        Note over AI: Agent authors the Generation Spec
+    end
+    AI->>MCP: validate_spec(spec)
+    MCP-->>AI: spec_id (grounded)
+    AI->>MCP: materialize_dataset(spec_id, instance_count=20)
+    Note over MCP: probes instance 1 fully,<br/>then builds the rest
+    MCP-->>AI: job summary (UIDs, count, validation)
+    AI-->>You: "Here's what I'll store — confirm?"
+    You-->>AI: confirm
+    AI->>MCP: store_to_pacs(confirm_store=True)
+    MCP->>PACS: upload files
+    AI-->>You: "✓ Study stored" + link
+```
+
+Narrated, step by step:
 
 1. You ask (or type `/generate`). The agent follows `CLAUDE.md`'s golden
    rules — check the recipe cache before authoring anything.
@@ -199,8 +280,9 @@ Example: **"Generate a CT study with 20 instances."**
    something's missing, there's a small bounded auto-repair loop (the agent
    fixes the reported tags and retries `validate_spec`/`materialize_dataset`)
    before it commits to all 20.
-6. If this was a fresh (non-recipe) spec, `materializer.py` auto-saves it as
-   a recipe — so the *next* plain CT request in step 2 is a hit.
+6. If this was authored fresh from the Knowledge Base (not extracted from an
+   existing PACS study), `materializer.py` auto-saves it as a recipe — so
+   the *next* plain CT request in step 2 is a hit.
 7. The tool returns a compact result (job id, study UID, count, output path,
    validation status, rough token cost) — the agent shows you this summary,
    never the raw DICOM tags.
@@ -219,7 +301,22 @@ irreversible.**
 
 ---
 
-## 7. Where to look next
+## 8. Myths vs. reality
+
+Quick gut-check for anything that still feels fuzzy:
+
+| Myth | Reality |
+|---|---|
+| "The AI writes the DICOM file." | It never touches a `.dcm` byte. It writes a small JSON spec; `materializer.py` (plain Python) writes the file. |
+| "The AI knows DICOM by heart." | It's grounded on the Knowledge Base every time (`get_iod_requirements`) — nothing is memorized or guessed. |
+| "Bigger requests cost more AI tokens." | No — one spec covers the whole study regardless of instance count. 3 instances and 1,000 cost the same tokens; only server compute time scales. See `solution-design.md §13`. |
+| "Editing a study overwrites it." | Not by default. `modify_dataset` creates a new derived study unless you explicitly confirm a destructive in-place overwrite. |
+| "It can generate any kind of DICOM object." | Only standard image IODs (CT/MR/US/CR/DX/XA/...) plus PR and KO. SR, RT, SEG, and encapsulated docs are explicitly refused, never faked. |
+| "Nothing is checked before it hits the PACS." | Every study passes `validate_spec` *and* `validate_dataset` (full DICOM conformance) before `store_to_pacs` is even allowed to run. |
+
+---
+
+## 9. Where to look next
 
 - **`docs/solution-design.md`** — the authoritative deep-dive (Knowledge
   Base, Generation Spec format, UID strategy, validation, storage, token
@@ -228,6 +325,9 @@ irreversible.**
   reference table.
 - **`docs/SETUP.md`** / **`docs/QUICKSTART.md`** — how to get the
   environment running and example prompts to try.
+- **`docs/sample-prompts.md`** / **`docs/demo-prompts.md`** — more prompts
+  to try once you're comfortable, from plain regression checks to
+  PR/KO markup demos.
 - **`CLAUDE.md`** — the actual operating contract the agent follows; worth
   reading once you're comfortable, to see exactly which shortcuts and
   guardrails are hard-coded into how the agent behaves.

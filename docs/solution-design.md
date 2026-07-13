@@ -85,18 +85,18 @@ sequenceDiagram
     User->>Agent: "Generate 200 axial CT instances, PatientAge 34Y"
     Agent->>MCP: find_recipe(modality=CT, orientation=axial)
     alt recipe hit
-        MCP-->>Agent: {found: true, spec}
+        MCP-->>Agent: found=true, cached spec returned
     else recipe miss
         Agent->>MCP: resolve_seed(modality=CT, orientation=axial)
         Agent->>MCP: get_iod_requirements(modality=CT)
         Note over Agent: Agent authors attributes/perInstance/pixel,<br/>grounded on the KB response
     end
-    Agent->>MCP: validate_spec(spec) with overrides={PatientAge: "034Y"} applied
-    MCP-->>Agent: {grounded: true, spec_id}
+    Agent->>MCP: "validate_spec(spec) with overrides PatientAge=034Y applied"
+    MCP-->>Agent: grounded=true, spec_id returned
     Agent->>MCP: materialize_dataset(spec_id, instance_count=200)
     Note over MCP: probe-first, bounded auto-repair if the probe fails;<br/>auto-saves a recipe on success (KB-authored path)
-    MCP-->>Agent: {job_id, study_uid, count, output_path, validation, approx_tokens}
-    Agent-->>User: confirm plan (count > 50)
+    MCP-->>Agent: job_id, study_uid, count, output_path, validation, approx_tokens
+    Agent-->>User: "confirm plan (count over 50)"
     User-->>Agent: confirm
     Agent->>MCP: store_to_pacs(output_path, confirm_store=True)
     MCP->>PACS: C-STORE / REST
