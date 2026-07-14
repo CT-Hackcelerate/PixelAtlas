@@ -35,7 +35,6 @@ templates) and load them into a test PACS (Orthanc).
 | UC-07 | Generic PACS feature lookup | `/check-feature` |
 | UC-08 | Multi-series studies (same study, multiple series) | `/generate` with `study_uid` |
 | UC-09 | PR/KO markup referencing existing instances | manual spec flow |
-| UC-10 (future) | Headless/CI-triggered generation | n/a |
 
 ## 4. Detailed Use Cases
 
@@ -131,11 +130,6 @@ templates) and load them into a test PACS (Orthanc).
 - **Postconditions:** A new PR or KO instance in the same study, referencing
   the named instances.
 
-### UC-10 (Future) — Headless/CI-triggered generation
-
-- Out of scope today (requires an interactive agent chat session). Documented
-  as a future extensibility path only.
-
 ## 5. Non-Functional Requirements
 
 | Requirement | Detail |
@@ -153,4 +147,4 @@ templates) and load them into a test PACS (Orthanc).
 - Structured Reports (SR), RT objects, Segmentation (SEG), encapsulated
   documents, Waveforms — the agent says "not supported," never substitutes.
 - PHI scrubbing — deferred; this is a test tool on test/synthetic data only.
-- Multi-tenant SaaS hosting, headless/CI invocation (UC-10).
+- Multi-tenant SaaS hosting, headless/CI invocation.
