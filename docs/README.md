@@ -15,6 +15,8 @@ Synthetic DICOM data generation via the Pixel Atlas MCP server.
 
 - **[demo-prompts.md](demo-prompts.md)** — Real prompt examples, from "basic CT" to "prior study with PR"
 - **[use-cases.md](use-cases.md)** — Structured scenarios: annotation workflows, multi-modality testing, regression suites
+- **[dod-evidence.md](dod-evidence.md)** — Definition of Done: every use case and golden rule mapped to code evidence, code-enforced vs. agent-behavior-only
+- **[safety-and-compliance.md](safety-and-compliance.md)** — No real PHI, safe-refusal behavior, domain guardrails, human confirmation gates
 
 ## 🗄️ Archive
 
@@ -42,6 +44,8 @@ Synthetic DICOM data generation via the Pixel Atlas MCP server.
 | **How it works** | [solution-design.md](solution-design.md) |
 | **Architecture** | [architecture.md](architecture.md) |
 | **Scenarios** | [use-cases.md](use-cases.md) |
+| **DoD evidence** | [dod-evidence.md](dod-evidence.md) |
+| **Safety & Compliance** | [safety-and-compliance.md](safety-and-compliance.md) |
 
 ---
 
