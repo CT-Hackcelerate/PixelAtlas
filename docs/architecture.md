@@ -2,8 +2,7 @@
 
 > Components, data flow, and the MCP tool reference for the system as it
 > exists today. Companion to [solution-design.md](solution-design.md) (the
-> **how** — Generation Spec format, Knowledge Base, token economy) and
-> [BEGINNERS-GUIDE.md](BEGINNERS-GUIDE.md) (plain-English on-ramp).
+> **how** — Generation Spec format, Knowledge Base, token economy).
 
 ## 1. Overview
 
