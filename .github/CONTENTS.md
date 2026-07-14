@@ -1,4 +1,9 @@
-# `.github/`
+# `.github/` — contents
+
+> Named `CONTENTS.md` rather than `README.md` on purpose: GitHub's repo
+> landing page prefers a README found in `.github/` over one in the repo
+> root, which would hide the real project README behind this folder-manifest
+> page.
 
 Copilot Chat integration: the chat mode, repo-wide instructions, and the
 slash-command prompt files that scope the agent to one MCP tool set per

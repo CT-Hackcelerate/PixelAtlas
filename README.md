@@ -63,7 +63,7 @@ Each folder has its own README with details on its contents:
 | [mcp-server/](mcp-server/README.md) | The Pixel Atlas MCP server (Python) |
 | `recipes/` | Auto-grown cache of validated Generation Specs (gitignored) |
 | [.vscode/](.vscode/README.md) | MCP server registration for VS Code |
-| [.github/](.github/README.md) | Copilot chat mode, instructions, and slash-command prompt files |
+| [.github/](.github/CONTENTS.md) | Copilot chat mode, instructions, and slash-command prompt files |
 | [staging/](staging/README.md) | Scratch output for in-progress generation jobs (gitignored) |
 | [scripts/](scripts/README.md) | `setup.ps1` — happy-path environment bootstrap |
 | `.pixel-atlas/logs/` | Runtime audit log (`agent.log`, gitignored) — see [solution-design.md](docs/solution-design.md) |
