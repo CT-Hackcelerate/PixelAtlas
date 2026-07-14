@@ -1,45 +1,60 @@
 # `mcp-server/`
 
-The Pixel Atlas MCP server — a local Python process that exposes DICOM
-generation/validation/PACS tools over MCP stdio to Copilot Chat (or any other
-MCP client). See [architecture.md §3](../docs/architecture.md#3-dicom-mcp-server--bare-minimum-spec)
-for the full tool contract and [execution-plan-phases1-3.md](../docs/execution-plan-phases1-3.md)
-for what's implemented so far.
+The Pixel Atlas MCP server — a local Python process exposing DICOM
+generation/validation/PACS tools over MCP stdio to an AI coding agent (Claude
+Code, Copilot Chat, or any MCP client). This is the **AI-driven** design: the
+agent authors a Generation Spec grounded on the DICOM Knowledge Base, which a
+deterministic Materializer turns into `.dcm` files. See
+[architecture.md](../docs/architecture.md) and
+[solution-design.md](../docs/solution-design.md).
+
+## Pipeline
+
+`find_recipe(modality, body_part, orientation, ...)` first — a cache hit hands
+back a previously-validated Generation Spec, skipping authoring entirely. On a
+miss: `resolve_seed` → (`extract_spec` from a matching PACS study, or author a
+spec from the KB via `get_iod_requirements`/`describe_attributes`) →
+`validate_spec` (→ `spec_id`) → `materialize_dataset` (probe-first) →
+`validate_dataset` → `store_to_pacs`. The same flow covers fresh generation,
+editing existing studies, and PR/KO. Every KB-authored spec that materializes
+successfully is auto-saved as a recipe (`materializer.py`), so the cache grows
+from real usage.
 
 ## Files
 
 | File | Responsibility |
 |---|---|
-| `server.py` | Entry point. Registers all MCP tools on a `FastMCP` instance and runs over stdio — including `get_iod_requirements(template_id?, sop_class_uid?)`, a read-only lookup into a template's `iod_spec.yaml` knowledge base. Start here to see the full tool list. Also attaches a stderr handler to the root logger at import time, **before** anything else runs — `dicom_validator` attaches its own stdout handler to the root logger on first use if none exists yet, which would corrupt the stdio JSON-RPC channel; don't remove this without checking that dependency's logging behavior first. |
-| `config.py` | All environment-driven configuration (template/staging/log directories, Orthanc URL + credentials, test UID root, `dicom-validator`'s standard-cache path). Nothing else in this folder should read `os.environ` directly. |
-| `orthanc_client.py` | Thin wrapper around the Orthanc REST API — reachability (`is_reachable`), study search (`find_studies`), a study's patient identity/date (`get_study_details`, used by priors), every instance ID for a study (`list_instance_ids`, used by `modify_dataset`/standalone validate), an instance's full tag set (`get_instance_tags`, used by `check_pacs_feature`), fetching instance bytes (`fetch_instance_bytes`/`fetch_first_instance_bytes`), and uploading an instance (`upload_instance`, the `storescu`-unavailable fallback for `store_to_pacs`). |
-| `templates.py` | Loads `templates/catalog.yaml` and per-template `manifest.yaml` files (generation fill-rules). No PACS or subprocess calls — pure filesystem reads. |
-| `iod_lookup.py` | Loads/queries each template's committed `iod_spec.yaml` (the IOD knowledge base: mandatory/conditional/optional modules and their tags — see `templates/README.md`). Pure YAML reader, no `dicom-validator` import here or anywhere else in the runtime path (`scripts/generate_iod_spec.py` is the only place that reads `dicom-validator` directly, offline, to author the committed file). Backs the `get_iod_requirements` tool, `generator.py`'s fill-in-the-blanks safety net, and `modify.py`'s override validation against a study's actual SOP Class. |
-| `seed_builder.py` | `build_minimal_seed(...)`/`write_seed(...)` — one shared, modality-agnostic builder for a template's pixel-only fallback seed (`seed/IM0001.dcm`). Used by `scripts/generate_seed.py`, not imported by `server.py` directly. |
-| `job_registry.py` | In-memory `job_id -> {state, progress_pct, message}` store (v1, no persistence across restarts). Written to by `generator.py`/`modify.py`, and by `server.py`'s `store_to_pacs`/`validate_dataset` wrappers (which infer `job_id` from the staging folder name), read by `get_job_status`. |
-| `uid_strategy.py` | `new_uid(job_id, index)` — deterministic UID generation under `config.TEST_OID_ROOT` (solution-design.md §7). Same `(job_id, index)` always yields the same UID, so a retried job doesn't create duplicates. |
-| `seed_resolver.py` | `resolve_seed(modality, body_part?, orientation?)` — PACS-first/template-fallback seed resolution (solution-design.md §3). |
-| `override_policy.py` | Shared override-tag validation used by both `generator.py` and `modify.py`: `validate_overrides(overrides, tag_rules, valid_keywords)` rejects a tag only if it's `protected` (a template's `tag_rules.sequence` keys, plus the UIDs the generator always regenerates — `protected_tags_for(tag_rules)`) or absent from the target IOD's known tag list. Everything else valid for the IOD is a legal override — there's no separate hand-curated allow-list. Also owns `PlanError` (re-exported by `generator.py` for existing importers). Dependency-free by design (no imports of `generator`/`modify`/`templates`/`iod_lookup`) to avoid an import cycle. |
-| `generator.py` | `generate_dataset(...)` — the core generation loop: loads the resolved seed, applies the template's tag rules + overrides via `pydicom` (not `dcmodify` — see module docstring), runs a fill-in-the-blanks safety net against `iod_lookup`'s IOD knowledge base for any unconditional Type 1/Type 2 tag still missing (empty for Type 2, a clear `PlanError` naming the tag for Type 1), writes new UIDs, saves to `staging/<job_id>/`. Also supports **priors**: pass `prior_of_study_uid`/`days_before` to reuse a reference study's `PatientID`/`PatientName`/`StudyDate` (offset earlier) instead of drawing a new synthetic patient — see `_resolve_prior_identity`. Exposes `apply_overrides`/`strict_value_validation`, reused by `modify.py` rather than duplicated. |
-| `modify.py` | `modify_dataset(study_uid, overrides?, regenerate_uids=True, job_id?)` — fetches every instance of an existing PACS study (sorted by `InstanceNumber` — Orthanc's listing order doesn't guarantee that), validates overrides via `override_policy.validate_overrides` against the study's actual IOD (`iod_lookup`) and a best-effort `tag_rules` match by modality (for sequence-tag protection), applies overrides via `generator.apply_overrides`, and either writes a new derived study (`regenerate_uids=True`, default) or keeps the original UIDs (`regenerate_uids=False` — destructive; gated behind `confirm_destructive` at the `server.py` tool layer, not here). |
-| `validator.py` | `validate_dataset(path?, study_uid?)` — IOD conformance via `dicom-validator` (not `dciodvfy` — see module docstring), cross-instance structural checks (100% of instances), and `dcmftest` on a sampled subset. `study_uid` fetches every instance into a throwaway `staging/validate-<id>/` folder first (`_materialize_study`, also sorted by `InstanceNumber`) and reuses the same path-based checks. |
-| `pacs_store.py` | `store_to_pacs(path)` — `storescu` batch C-STORE, falling back to `orthanc_client.upload_instance` if `storescu` isn't on PATH. The `server.py` tool wrapper requires `confirm_store=True` on every call (not just large/destructive ones) — this is the one step that reaches the shared PACS, so it's gated the same way `confirm_destructive` gates `modify_dataset`'s in-place path. |
-| `feature_lookup.py` | `check_pacs_feature(tag, value?, modality?, date_range?)` — generic "does the PACS already have a study with this tag/value" lookup. Accepts a DICOM keyword or `GGGG,EEEE` hex tag (normalized via `pydicom.datadict`); checks one representative instance per candidate study. No NL-to-tag mapping here by design — the model resolves the user's phrase to a DICOM keyword itself before calling it. |
-| `audit_log.py` | Appends one JSON line per tool call to `.pixel-atlas/logs/agent.log` — timestamp, tool name, input summary, outcome. No raw PHI-shaped values are logged. |
-| `requirements.txt` | `mcp`, `pydicom`, `PyYAML`, `requests`, `numpy`, `dicom-validator`. Install into the repo-root `.venv` (see root [README.md](../README.md)). |
+| `server.py` | Entry point. Registers all MCP tools on a `FastMCP` instance over stdio. Also attaches a stderr handler to the root logger at import time — `dicom_validator` would otherwise attach a stdout handler on first use and corrupt the stdio JSON-RPC channel; don't remove it. |
+| `config.py` | Environment-driven config (recipes/staging/log dirs, Orthanc URL + credentials, test UID root, KB dir/edition). Nothing else reads `os.environ`. |
+| `iod_lookup.py` | **The Knowledge Base.** Loads the **committed** KB JSON (`kb/2026c/dict_info.json`/`iod_info.json`/`module_info.json` — pinned edition, no network, no parse delay) once, shared with `validator.py`; answers `requirements(sop_class)`, `describe(tag)`, `valid_keywords`, `mandatory_tags`, modality↔SOP-Class resolution, and the supported-family / multi-frame / reference-object checks. Also the generic functional-group builder — `macro_skeleton(ref)`/`mandatory_group_macros(sop_class)` walk `group_macros` + nested `items`/`include` to build any modality's mandatory macro structure with zero per-modality Python, and `_cond_holds` resolves Type-1C/2C tags whose condition is already known (e.g. SOPClassUID-based). Backs `get_iod_requirements`/`describe_attributes`. |
+| `spec_store.py` | In-memory store of validated Generation Specs keyed by `spec_id` (the token-saving handle); `apply_diff` for repairs. Owns `SpecError`. |
+| `dicom_apply.py` | Shared value application: `apply_value_map` (keyword→value with strict VR validation) + sequence coercion. Used by the validator and materializer. |
+| `spec_validator.py` | `validate_spec` — grounds a spec vs the KB (tag existence, VR, IOD validity, pixel-module/UID placement) plus curated cross-tag rules (pixel group, Modality↔SOPClass, geometry). Stores the spec and returns a `spec_id` on success. |
+| `seed_builder.py` | Pixel synthesis (`synth_pixels`: noise/gradient/phantom, single- or multi-frame) and `build_base` — the minimal base dataset for the KB (no-PACS-seed) path. Materializer-owned Image Pixel module. |
+| `materializer.py` | `materialize_dataset(spec_id)` — builds `.dcm` files: single-frame (N files, probe-first), multi-frame (one file; functional-group skeleton built generically from the KB for any modality — CT/MR/PT/future, zero per-modality code), and PR/KO (reference-based, no pixels). Reuses `uid_strategy`, `job_registry`, `orthanc_client`, `seed_builder`, and `validator` (for the probe). Applies viewer-safety defaults, priors, synthetic identity; emits `approx_tokens`; auto-saves a recipe. |
+| `spec_extractor.py` | `extract_spec(study_uid|path)` — turns an existing study into a Generation Spec (no PHI scrubbing; test data only) for the PACS-first and modify paths. |
+| `recipe_store.py` | File-based recipe cache under `config.RECIPES_DIR`, keyed by modality+body_part+orientation+SOP-Class+flags; `save_recipe`/`find_recipe`/`list_recipes`/`get_recipe`. Replaces the old template catalog. |
+| `modify.py` | `modify_dataset(study_uid, overrides?, regenerate_uids=True, …)` — fetches every instance (sorted by `InstanceNumber`), validates overrides via the KB, applies them via `dicom_apply`, and writes a new derived study or (gated) an in-place overwrite. |
+| `seed_resolver.py` | `resolve_seed` — PACS-first; returns `pacs` / `iod` / `unsupported` (no coverage-gap branch — the KB covers every supported IOD). Lightweight matching (modality + StudyDescription substring). |
+| `uid_strategy.py` | `new_uid(job_id, index)` — deterministic UIDs under `config.TEST_OID_ROOT`. |
+| `validator.py` | `validate_dataset(path?|study_uid?)` — IOD conformance (`dicom-validator`), cross-instance structural checks, `dcmftest`. Skips the PixelData check for reference objects (PR/KO). Shares the KB's standard-data loader. |
+| `pacs_store.py` | `store_to_pacs(path)` — `storescu` batch C-STORE, Orthanc REST fallback. Gated by `confirm_store=True` at the tool layer. |
+| `feature_lookup.py` | `check_pacs_feature(tag, value?, …)` — generic "does the PACS have this tag/value" lookup. |
+| `orthanc_client.py` | Thin Orthanc REST wrapper (reachability, study search, instance fetch/upload, study details for priors). |
+| `job_registry.py` | In-memory `job_id -> {state, progress_pct, message}` (no cross-restart persistence). |
+| `token_util.py` | `estimate(obj)` — rough tool-boundary token estimate (tiktoken if present, else chars/4). |
+| `audit_log.py` | `log_call` (one JSON line per tool call) + `log_job` (full spec + provenance + KB edition per job; disk only). |
+| `requirements.txt` | `mcp`, `pydicom`, `requests`, `numpy`, `dicom-validator` (+ optional `tiktoken`). Install into the repo-root `.venv`. |
+| `kb/2026c/` | The **committed DICOM Knowledge Base** — `dict_info.json`/`iod_info.json`/`module_info.json`, pinned to standard edition 2026c. Checked into the repo so every environment sees identical data with no network fetch. Rebuild only if the pinned edition changes (re-copy dicom-validator's `~/.dicom-validator/<edition>/json/` output). |
 
 ## Adding a new tool
 
-1. Write the function in `server.py` (or a new module imported by it) and
-   decorate with `@mcp.tool()` — the docstring becomes the tool description
-   shown to the model.
-2. Call `audit_log.log_call(...)` before returning, so every invocation is
-   traceable.
-3. If it's a Phase 3+ tool that mutates state (e.g. `modify_dataset`), update
-   `job_registry` and reuse `generator`/`validator`/`pacs_store` rather than
-   re-implementing tag/PACS logic inline.
-4. Add a corresponding `.github/prompts/<command>.prompt.md` if it should be
-   reachable as a slash command (see [.github/README.md](../.github/README.md)).
+1. Write the function in `server.py` (or a module it imports), decorate with
+   `@mcp.tool()` — the docstring is the tool description shown to the model.
+2. Call `audit_log.log_call(...)` before returning.
+3. Reuse `spec_validator`/`materializer`/`validator`/`pacs_store` rather than
+   re-implementing tag/PACS logic; raise `SpecError` for plan failures.
+4. Add a `.github/prompts/<command>.prompt.md` if it should be a slash command.
 
 ## Running it directly (outside VS Code)
 
@@ -47,12 +62,6 @@ for what's implemented so far.
 ..\.venv\Scripts\python server.py
 ```
 
-It idles waiting for MCP stdio messages — fine for confirming there's no
-import/startup error, but for functional testing it's easier to import the
-tool functions directly in a Python shell, e.g.:
-
-```python
-import server
-server.health_check()
-server.list_templates()
-```
+It idles on MCP stdio (confirms no import/startup error). For functional testing,
+import the modules and drive the pipeline directly (`spec_validator.validate_spec`
+→ `materializer.materialize_dataset` → `validator.validate_dataset`).

@@ -1,54 +1,46 @@
 ---
 description: Generate synthetic DICOM instances into the PACS
 mode: agent
-tools: ["pixel-atlas/get_template_info", "pixel-atlas/resolve_seed", "pixel-atlas/generate_dataset", "pixel-atlas/validate_dataset", "pixel-atlas/store_to_pacs"]
+tools: ["pixel-atlas/find_recipe", "pixel-atlas/resolve_seed", "pixel-atlas/get_iod_requirements", "pixel-atlas/describe_attributes", "pixel-atlas/extract_spec", "pixel-atlas/validate_spec", "pixel-atlas/materialize_dataset", "pixel-atlas/validate_dataset", "pixel-atlas/store_to_pacs"]
 ---
 
-# /generate modality=<CT> count=<n> [orientation=] [body_part=] [tag=value ...] [prior_of=<study_uid> days_before=<n>]
+# /generate modality=<CT|MR|US|...> count=<n> [body_part=] [orientation=] [enhanced=true] [tag=value ...]
 
-Follow this exact sequence (solution-design.md §2, §4):
+**Check the recipe cache before authoring anything by hand.**
 
-1. Call `get_template_info` for the requested modality to learn its
-   `protected_tags` — the only tags that CAN'T be overridden (tags this
-   generator computes itself per-instance, plus UIDs it always regenerates).
-   Reject any `tag=value` override that's in `protected_tags`, or that isn't
-   a valid tag for the template's IOD (`get_iod_requirements`) — ask the user
-   to correct it. Anything else is a valid override.
-2. Call `resolve_seed(modality, body_part, orientation)`.
-   - If `source_type=pacs` and there's more than one candidate, present up
-     to 5 (StudyInstanceUID, description, date) and ask the user to pick
-     one, or to use the template fallback instead.
-   - If `source_type=template`, tell the user plainly that no similar data
-     was found in the PACS and ask for explicit confirmation before using
-     the bundled template seed. Do not proceed without that confirmation.
-   - If `source_type=none`, report the closest alternatives from
-     `closest_alternatives` and stop — no generation happens.
-3. If `count` > 50, confirm with the user before proceeding (large-batch
-   confirmation, independent of the template-fallback confirmation above).
-4. If `prior_of=<study_uid>` was given, `days_before` is required (a positive
-   integer number of days before the reference study's StudyDate). Pass both
-   through to `generate_dataset` as `prior_of_study_uid`/`days_before` — this
-   reuses that study's PatientID/PatientName/StudyDate (offset earlier) instead
-   of drawing a new synthetic patient, so the result reads as a genuine prior
-   for comparison. It still gets its own independent StudyInstanceUID (never an
-   in-place edit of the reference study).
-5. Call `generate_dataset(template_id, seed_source, count, overrides, prior_of_study_uid?, days_before?)`
-   using the `seed_source` resolved (and confirmed) in step 2.
-6. Call `validate_dataset(output_path)`. If `passed` is false, stop and
-   report the errors — do not call `store_to_pacs`. Always relay the
-   `iod_conformance` summary in the report alongside the pass/fail result
-   (files_with_errors and example_errors, if any).
-7. **Before storing anything to the PACS**, show the user a summary of what's
-   about to happen — study_uid, instance count, seed source, the validation
-   result, any overrides applied — and ask them to confirm the store. This
-   is a separate confirmation from the template-fallback one (step 2) and
-   the >50-count one (step 3); it applies to every `/generate` call
-   regardless of count or seed source, because storing is the one step that
-   actually reaches the shared PACS. Only call
-   `store_to_pacs(output_path, confirm_store=True)` after that confirmation
-   — the tool rejects the call without `confirm_store=True`, so don't skip
-   passing it even if you're confident the user already agreed.
-8. Report a compact summary: job_id, study_uid, instance count, seed source
-   used, validation result, and stored/failed counts. If this was a prior,
-   also state the shared PatientID and the computed StudyDate. Never dump raw
-   per-instance tag data into the chat.
+1. `find_recipe(modality, body_part?, orientation?, enhanced?, contrast?,
+   localizer?)`.
+   - **Hit**: take `spec` from the result. Apply any `tag=value` requests
+     directly into its `attributes`/`perInstance`. Go to step 3.
+   - **Miss**: step 2.
+2. Author the spec. `resolve_seed(modality, body_part?, orientation?,
+   enhanced?)`:
+   - `source_type: "pacs"` → `extract_spec(study_uid=<candidate>)`.
+   - `source_type: "iod"` → `get_iod_requirements(modality, enhanced?)`
+     (compact — never pass `full=true` here), `describe_attributes` for any
+     tag you're unsure of, then write the Generation Spec yourself: `request`
+     (modality, instanceCount, seedSource), `attributes` (flat
+     `{Keyword: value}` map), `perInstance` rules, `pixel` directive,
+     `identity`. Multi-frame (e.g. "multi-frame US", "cine", "enhanced CT"):
+     set `enhanced=true` on `resolve_seed`/`get_iod_requirements`,
+     `instanceCount` = number of frames, and for classic cine set
+     `CineRate`/`FrameTime` (or `FrameTimeVector`) in `attributes` yourself.
+   - Put any `tag=value` requests from the user into `attributes`
+     (uniform) or `perInstance` (varying per instance).
+3. `validate_spec(spec)`. **On error, fix exactly the reported tags and
+   retry at most a couple of times — never loop on the same failure.** On
+   success you get `spec_id`.
+4. `materialize_dataset(spec_id, instance_count=count)`. Returns
+   `{job_id, study_uid, count, frames?, output_path, validation, approx_tokens}`
+   or a precise `error` (report and stop, don't retry blindly).
+5. Show the user a compact summary (study_uid, count/frames,
+   validation=passed, approx_tokens) and ask them to confirm the store.
+6. On confirmation, call `store_to_pacs(output_path, confirm_store=True)` and
+   report stored/failed counts.
+
+`materialize_dataset` already validates a probe instance — only run a
+standalone `validate_dataset(path=output_path)` if you want to re-show full
+conformance before storing.
+
+Never dump raw per-instance tags or the full spec JSON to the user — report
+compact summaries only.

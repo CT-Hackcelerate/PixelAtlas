@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe \"C:\\\\Users\\\\ashishm\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--dev-PixelAtlas\\\\6119873c-9e8b-4cd8-a716-0e2a18b8d64a\\\\scratchpad\\\\test_sf.py\")",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(.venv/Scripts/python.exe \"C:\\\\Users\\\\ashishm\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--dev-PixelAtlas\\\\6119873c-9e8b-4cd8-a716-0e2a18b8d64a\\\\scratchpad\\\\test_hard.py\")",
+      "Bash(.venv/Scripts/python.exe \"C:\\\\Users\\\\ashishm\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--dev-PixelAtlas\\\\6119873c-9e8b-4cd8-a716-0e2a18b8d64a\\\\scratchpad\\\\test_full.py\")",
+      "Bash(grep -l -i \"template\" .github/prompts/*.md .github/README.md)",
+      "Bash(grep -rn -i \"template\" .github/prompts/status.prompt.md .github/prompts/validate.prompt.md)",
+      "Bash(.venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0,'mcp-server'\\); import server, json; print\\(json.dumps\\(server.health_check\\(\\)\\)\\)\")",
+      "Bash(grep -n \"staging\\\\|recipes\\\\|pixel-atlas\" .gitignore)",
+      "Bash(ls recipes/)",
+      "Bash(cd 'c:\\\\dev\\\\PixelAtlas' && rm -f recipes/*.json && echo \"removed test recipes\")",
+      "Bash(.venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0,'mcp-server'\\); import server; print\\('OK,', len\\([t for t in dir\\(server\\) if not t.startswith\\('_'\\)]\\), 'names'\\)\")",
+      "Bash(mv docs/ai-driven-architecture.md docs/architecture.md)",
+      "Bash(mv docs/ai-driven-solution-design.md docs/solution-design.md)",
+      "Bash(.venv/Scripts/python.exe -)",
+      "Bash(xargs -I{} sh -c 'true')",
+      "Bash(.venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0,'mcp-server'\\); import server; print\\('OK'\\)\")",
+      "Bash(python -m py_compile server.py materializer.py orthanc_client.py)",
+      "Bash(python -c ' *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "mcp__pixel-atlas__list_series_instances",
+      "mcp__pixel-atlas__validate_spec",
+      "mcp__pixel-atlas__get_iod_requirements",
+      "mcp__pixel-atlas__store_to_pacs",
+      "Skill(validate)",
+      "Skill(validate:*)",
+      "mcp__pixel-atlas__materialize_dataset",
+      "Bash(python -c \"import dicom_validator; print\\(dicom_validator.__file__\\)\")",
+      "Bash(pip show *)"
+    ],
+    "additionalDirectories": [
+      "C:\\dev\\PixelAtlas\\recipes"
+    ]
+  }
+}

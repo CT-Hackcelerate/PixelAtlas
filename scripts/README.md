@@ -2,16 +2,34 @@
 
 | File | Purpose |
 |---|---|
-| `setup.ps1` | Happy-path bootstrap: checks Docker, starts/creates the Orthanc container, sets up `.venv` + `mcp-server` dependencies, checks for DCMTK (soft dependency, informational only), and runs `health_check` to confirm everything works. See the script's own header comment for scope notes — it automates the *actual* native-venv setup this project uses, not the containerized-MCP-server path architecture.md describes as an option. |
-| `generate_iod_spec.py` | One-time template-authoring tool: dumps a DICOM IOD's module/tag requirements from `dicom-validator`'s standard-derived data into a committed `templates/<MODALITY>/<template_id>/iod_spec.yaml`. Run manually when adding a new IOD template or refreshing against a new DICOM standard edition — never invoked by the MCP server. Usage: `python scripts/generate_iod_spec.py <sop_class_uid> <output_path>`. |
-| `generate_seed.py` | Regenerates a template's pixel-only fallback seed (`seed/IM0001.dcm`) from its `manifest.yaml` (`sop_class_uid`, `modality`, optional `seed_params`) — one shared script for every modality. Usage: `python scripts/generate_seed.py <template_id>`. |
+| `setup.ps1` | Happy-path bootstrap: checks Docker, starts/creates the Orthanc container, sets up `.venv` + `mcp-server` dependencies, checks for DCMTK (soft dependency, informational only), and runs `health_check` to confirm everything works. Automates the native-venv setup described in [SETUP.md](../docs/SETUP.md) — the MCP server itself always runs as a local Python subprocess, never containerized; only Orthanc runs in Docker. |
+| `reset_orthanc.ps1` | Deletes **all** studies from the local Orthanc PACS via its REST API — a full reset of the test PACS between runs. Irreversible; prompts for confirmation unless `-Yes` is passed. Reads the same `ORTHANC_URL`/`ORTHANC_USER`/`ORTHANC_PASSWORD` env vars as `mcp-server/config.py`. |
 
 Run from the repo root or from `scripts/` itself:
 
 ```powershell
 .\scripts\setup.ps1
+
+# wipe every study from the local test PACS
+.\scripts\reset_orthanc.ps1 OR
+powershell -ExecutionPolicy Bypass -File .\scripts\reset_orthanc.ps1
 ```
 
 Requires Docker Desktop and Python 3.11+ already installed — both need
 interactive/admin consent and can't be silently scripted (see
-[architecture.md §6](../docs/architecture.md#6-prerequisites--setup)).
+[SETUP.md](../docs/SETUP.md)).
+
+**Docker-only alternative to `reset_orthanc.ps1`:** since Orthanc's data here
+is just the container + its bind-mounted volume, you can equivalently nuke
+and recreate the container instead of going through the REST API:
+
+```powershell
+docker stop orthanc
+docker rm orthanc
+Remove-Item -Recurse -Force C:\orthanc-data
+.\scripts\setup.ps1   # recreates the container + empty data folder
+```
+
+Same end result as `reset_orthanc.ps1` (empty PACS), just via the container
+layer instead of per-study REST deletes — pick whichever you find easier to
+run correctly.

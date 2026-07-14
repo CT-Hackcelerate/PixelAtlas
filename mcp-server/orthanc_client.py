@@ -82,8 +82,9 @@ def _find_orthanc_study_id(study_uid: str, session: requests.Session, timeout: f
 
 
 def get_study_details(study_uid: str, timeout: float = 10.0) -> dict:
-    """Fetch a study's patient identity + date — used by generate_dataset's priors
-    support to reuse a reference study's PatientID/PatientName/StudyDate."""
+    """Fetch a study's patient identity + date/description — used by generate_dataset's
+    priors support and by attach-to-existing-study series generation to reuse a
+    reference study's identity. Raises ValueError if the study isn't in Orthanc."""
     session = _session()
     orthanc_study_id = _find_orthanc_study_id(study_uid, session, timeout)
     resp = session.get(f"{config.ORTHANC_URL}/studies/{orthanc_study_id}", timeout=timeout)
@@ -96,6 +97,8 @@ def get_study_details(study_uid: str, timeout: float = 10.0) -> dict:
         "patient_id": patient_tags.get("PatientID", ""),
         "patient_name": patient_tags.get("PatientName", ""),
         "study_date": main_tags.get("StudyDate", ""),
+        "study_description": main_tags.get("StudyDescription", ""),
+        "accession_number": main_tags.get("AccessionNumber", ""),
     }
 
 
@@ -107,6 +110,66 @@ def list_instance_ids(study_uid: str, timeout: float = 10.0) -> list[str]:
     instances_resp = session.get(f"{config.ORTHANC_URL}/studies/{orthanc_study_id}/instances", timeout=timeout)
     instances_resp.raise_for_status()
     return [instance["ID"] for instance in instances_resp.json()]
+
+
+def list_instance_geometry(study_uid: str, timeout: float = 10.0) -> list[dict]:
+    """InstanceNumber/SliceLocation for every instance of a study, in one Instance-level
+    /tools/find call (metadata only, no pixel data) — used to resample cross-sectional
+    slice spacing to a different instance count on PACS-seeded regeneration, instead of
+    freezing every new instance to the single seed instance's SliceLocation."""
+    body = {
+        "Level": "Instance",
+        "Query": {"StudyInstanceUID": study_uid},
+        "Expand": True,
+        "RequestedTags": ["InstanceNumber", "SliceLocation"],
+    }
+    resp = _session().post(f"{config.ORTHANC_URL}/tools/find", json=body, timeout=timeout)
+    resp.raise_for_status()
+    geo = []
+    for entry in resp.json():
+        tags = entry.get("RequestedTags", {})
+        loc = tags.get("SliceLocation")
+        if loc in (None, ""):
+            continue
+        try:
+            geo.append((int(tags.get("InstanceNumber") or 0), float(loc)))
+        except ValueError:
+            continue
+    geo.sort(key=lambda pair: pair[0])
+    return [{"instance_number": n, "slice_location": s} for n, s in geo]
+
+
+def list_instances_ordered(study_uid: str, timeout: float = 10.0) -> list[dict]:
+    """Every real instance of a study (Orthanc ID + geometry), sorted by SliceLocation
+    (falling back to InstanceNumber) — used to clone genuine per-instance pixel data
+    when materializing from a PACS seed, instead of synthesizing noise per instance."""
+    body = {
+        "Level": "Instance",
+        "Query": {"StudyInstanceUID": study_uid},
+        "Expand": True,
+        "RequestedTags": ["InstanceNumber", "SliceLocation", "SOPInstanceUID"],
+    }
+    resp = _session().post(f"{config.ORTHANC_URL}/tools/find", json=body, timeout=timeout)
+    resp.raise_for_status()
+    rows = []
+    for entry in resp.json():
+        tags = entry.get("RequestedTags", {})
+        try:
+            inst_num = int(tags.get("InstanceNumber") or 0)
+        except ValueError:
+            inst_num = 0
+        try:
+            slice_loc = float(tags["SliceLocation"]) if tags.get("SliceLocation") not in (None, "") else None
+        except ValueError:
+            slice_loc = None
+        rows.append({
+            "orthanc_id": entry.get("ID"),
+            "sop_instance_uid": tags.get("SOPInstanceUID", ""),
+            "instance_number": inst_num,
+            "slice_location": slice_loc,
+        })
+    rows.sort(key=lambda r: r["slice_location"] if r["slice_location"] is not None else r["instance_number"])
+    return rows
 
 
 def get_first_instance_id(study_uid: str, timeout: float = 10.0) -> str:
@@ -135,9 +198,42 @@ def get_instance_tags(instance_id: str, timeout: float = 10.0) -> dict:
     return resp.json()
 
 
-def fetch_first_instance_bytes(study_uid: str, timeout: float = 15.0) -> bytes:
-    """Fetch the raw DICOM bytes of one instance from a study, to use as a clone seed."""
-    return fetch_instance_bytes(get_first_instance_id(study_uid, timeout), timeout)
+
+
+def list_series_instances(study_uid: str, series_uid: str | None = None, timeout: float = 10.0) -> list[dict]:
+    """Enumerate stored instances for a study (optionally narrowed to one series) —
+    the lookup an agent needs to build a PR/KO `references` block against instances
+    already in the PACS, without ever reading a .dcm file directly.
+
+    Raises ValueError if nothing matches (study/series not yet stored)."""
+    query: dict[str, str] = {"StudyInstanceUID": study_uid}
+    if series_uid:
+        query["SeriesInstanceUID"] = series_uid
+    body = {
+        "Level": "Instance",
+        "Query": query,
+        "Expand": True,
+        "RequestedTags": ["SeriesInstanceUID", "SOPClassUID", "SOPInstanceUID", "InstanceNumber"],
+    }
+    resp = _session().post(f"{config.ORTHANC_URL}/tools/find", json=body, timeout=timeout)
+    resp.raise_for_status()
+    results = resp.json()
+    if not results:
+        scope = f"study '{study_uid}'" + (f" series '{series_uid}'" if series_uid else "")
+        raise ValueError(f"No stored instances found for {scope}")
+
+    instances = []
+    for entry in results:
+        tags = entry.get("RequestedTags", {})
+        instances.append(
+            {
+                "series_uid": tags.get("SeriesInstanceUID", ""),
+                "sop_class_uid": tags.get("SOPClassUID", ""),
+                "sop_instance_uid": tags.get("SOPInstanceUID", ""),
+                "instance_number": tags.get("InstanceNumber", ""),
+            }
+        )
+    return instances
 
 
 def upload_instance(dicom_bytes: bytes, timeout: float = 15.0) -> dict:

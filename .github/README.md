@@ -22,8 +22,9 @@ flowchart TD
 
     subgraph MCP["MCP Server (mcp-server/, Python) — does the HOW, deterministically"]
         M["FastMCP tool dispatch (server.py)"]
-        M --> Seed["resolve_seed:<br/>PACS match first, else templates/ catalog"]
-        Seed --> Gen["generate_dataset (generator.py):<br/>pydicom applies tag rules + overrides,<br/>IOD-fill safety net for missing mandatory tags,<br/>assigns new UIDs, writes staging/&lt;job_id&gt;/"]
+        M --> Seed["resolve_seed:<br/>PACS match first, else author from Knowledge Base"]
+        Seed --> Spec["author/extract a Generation Spec →<br/>validate_spec (grounding vs KB) → spec_id"]
+        Spec --> Gen["materialize_dataset (materializer.py):<br/>probe-first, pydicom builds files,<br/>synthesizes pixels, assigns UIDs → staging/&lt;job_id&gt;/"]
         Gen --> Val["validate_dataset (validator.py):<br/>dicom-validator IOD conformance +<br/>structural checks + dcmftest"]
         Val --> St["store_to_pacs (pacs_store.py):<br/>storescu, or Orthanc REST fallback"]
     end
@@ -40,10 +41,10 @@ flowchart TD
   PACS store — behind an explicit confirmation. It never touches DICOM files
   or the PACS directly.
 - **MCP server responsibilities:** everything after a tool is called is
-  plain, testable Python — load a seed (template or PACS), apply tag rules
-  with `pydicom`, assign UIDs, validate against the DICOM standard, and
-  store. Every call is logged to `.pixel-atlas/logs/agent.log` regardless of
-  which side (agent or server) is at fault if something goes wrong.
+  plain, testable Python — ground the spec against the standard-derived
+  Knowledge Base, build the dataset with `pydicom`, synthesize pixels, assign
+  UIDs, validate against the DICOM standard, and store. Every call is logged to
+  `.pixel-atlas/logs/agent.log`.
 - Chat mode + prompt files (`.github/chatmodes/`, `.github/prompts/`) are
   what keep the agent from wandering — each slash command scopes the model
   down to only the tools that command needs, rather than leaving every tool
@@ -65,26 +66,28 @@ Each folder has its own README with details on its contents:
 |---|---|
 | [../docs/](../docs/README.md) | Design docs, execution plan, setup guides |
 | [mcp-server/](mcp-server/README.md) | The Pixel Atlas MCP server (Python) |
-| [templates/](templates/README.md) | Tag template catalog + fallback seed data |
+| `recipes/` | Auto-grown cache of validated Generation Specs (created on first successful generation) |
 | [.vscode/](.vscode/README.md) | MCP server registration for VS Code |
 | [.github/](.github/README.md) | Copilot chat mode, instructions, and slash-command prompt files |
 | [staging/](staging/README.md) | Scratch output for in-progress generation jobs (gitignored) |
 | [scripts/](scripts/README.md) | `setup.ps1` — happy-path environment bootstrap |
-| `.pixel-atlas/logs/` | Runtime audit log (`agent.log`, gitignored) — see [solution-design.md §13](../docs/solution-design.md#13-status--observability) |
+| `.pixel-atlas/logs/` | Runtime audit log (`agent.log`, gitignored) — see [solution-design.md](../docs/solution-design.md) |
 
 ## Copilot agent design docs
 
 Design for the GitHub Copilot agent that generates/modifies test DICOM data on request:
 
-- [Use cases](../docs/use-cases.md) — actors, commands, and detailed use cases
-- [Solution design](../docs/solution-design.md) — workflow, template system, validation, token economy
-- [Architecture](../docs/architecture.md) — components, MCP server spec, deployment, and diagrams
-- [execution plan](../docs/execution-plan-phases1-3.md) — implementation scope/schedule for the current build
-- [Demo script](../docs/demo-script.md) — end-to-end walkthrough of every implemented command
-- [Sample prompts](../docs/sample-prompts.md) — 3-4 example Copilot Chat prompts per use case, for ad hoc manual testing
+- [Solution design](../docs/solution-design.md) — Knowledge Base, Generation Spec, materialization, token economy
+- [Architecture](../docs/architecture.md) — components, tool contract, diagrams
+- [Simple overview](../docs/ai-driven-simple-overview.md) — plain-English explanation
+- [Use cases](../docs/use-cases.md) — user-facing scenarios the tool must support
 
-## Implementation status
+Superseded planning docs (kept for history only, not current design):
+[docs/archive/](../docs/archive/).
 
-See [Implementation Status](../docs/implementation-status.md) for the detailed
-phase-by-phase build log, local dev environment setup, Copilot Chat testing
-steps, troubleshooting table, and what's not yet implemented.
+## Status
+
+The AI-driven pipeline is implemented and verified end-to-end (single-frame,
+multi-frame, PR, KO — all pass DICOM conformance; live `extract_spec`/`modify`
+against Orthanc). The one thing never exercised in a live Copilot Chat session is
+the interactive agent loop itself — every check has been a direct tool call.

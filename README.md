@@ -3,16 +3,18 @@ Generate realistic, customizable DICOM test dataset for development, testing and
 
 ## How it works
 
-Two things split the work: the **Copilot agent** (the LLM, in VS Code chat)
-decides *what* to do and confirms risky steps with you; the **MCP server**
-(`mcp-server/`, plain Python) does the *how*, deterministically — no LLM
-involved once a tool is called.
+Two things split the work: the **AI coding agent** (Claude Code or Copilot
+Chat, in VS Code) decides *what* to do and confirms risky steps with you; the
+**MCP server** (`mcp-server/`, plain Python) does the *how*, deterministically
+— no LLM involved once a tool is called. See
+[docs/ai-driven-simple-overview.md](docs/ai-driven-simple-overview.md) for a
+plain-English walkthrough with diagrams and real token-cost numbers.
 
 ```mermaid
 flowchart TD
-    U["User prompt in Copilot Chat<br/>e.g. /generate modality=CT count=3"] --> A
+    U["User prompt in an AI coding agent<br/>(Claude Code or Copilot Chat)<br/>e.g. /generate modality=CT count=3"] --> A
 
-    subgraph Agent["Copilot Agent (LLM) — decides WHAT, asks before risky steps"]
+    subgraph Agent["AI Agent (LLM) — decides WHAT, asks before risky steps"]
         A["Parse intent → pick a tool + params<br/>(scoped by chatmode + prompt files, e.g. generate.prompt.md)"]
         A --> Cfm{"Risky step?<br/>(count &gt; 50, destructive overwrite,<br/>anything hitting the PACS)"}
         Cfm -- yes --> Ask["Ask user to confirm"] --> A
@@ -22,8 +24,9 @@ flowchart TD
 
     subgraph MCP["MCP Server (mcp-server/, Python) — does the HOW, deterministically"]
         M["FastMCP tool dispatch (server.py)"]
-        M --> Seed["resolve_seed:<br/>PACS match first, else templates/ catalog"]
-        Seed --> Gen["generate_dataset (generator.py):<br/>pydicom applies tag rules + overrides,<br/>IOD-fill safety net for missing mandatory tags,<br/>assigns new UIDs, writes staging/&lt;job_id&gt;/"]
+        M --> Seed["resolve_seed:<br/>PACS match first, else author from Knowledge Base"]
+        Seed --> Spec["author/extract a Generation Spec →<br/>validate_spec (grounding vs KB) → spec_id"]
+        Spec --> Gen["materialize_dataset (materializer.py):<br/>probe-first, pydicom builds files,<br/>synthesizes pixels, assigns UIDs → staging/&lt;job_id&gt;/"]
         Gen --> Val["validate_dataset (validator.py):<br/>dicom-validator IOD conformance +<br/>structural checks + dcmftest"]
         Val --> St["store_to_pacs (pacs_store.py):<br/>storescu, or Orthanc REST fallback"]
     end
@@ -40,22 +43,20 @@ flowchart TD
   PACS store — behind an explicit confirmation. It never touches DICOM files
   or the PACS directly.
 - **MCP server responsibilities:** everything after a tool is called is
-  plain, testable Python — load a seed (template or PACS), apply tag rules
-  with `pydicom`, assign UIDs, validate against the DICOM standard, and
-  store. Every call is logged to `.pixel-atlas/logs/agent.log` regardless of
-  which side (agent or server) is at fault if something goes wrong.
+  plain, testable Python — ground the spec against the Knowledge Base, build the
+  dataset and synthesize pixels with `pydicom`, assign UIDs, validate against the
+  DICOM standard, and store. Every call is logged to `.pixel-atlas/logs/agent.log`.
 - Chat mode + prompt files (`.github/chatmodes/`, `.github/prompts/`) are
   what keep the agent from wandering — each slash command scopes the model
   down to only the tools that command needs, rather than leaving every tool
   visible for every request.
 
-## Setup guides
+## Quick Start
 
-- [VS Code, Git, and Claude setup](docs/vscode-git-claude-setup.md)
-- [Docker with WSL setup (without Docker Compose)](docs/docker-wsl-setup.md)
-- [Orthanc setup (without Docker Compose)](docs/orthanc-setup.md)
+1. **[Complete Setup (one guide)](docs/SETUP.md)** — WSL, Docker, Git, VS Code, Python, Orthanc, MCP
+2. **[Usage Examples](docs/QUICKSTART.md)** — Basic generation, multi-series, PR/KO, common commands
 
-Each guide includes step-by-step instructions and a verification section for the relevant setup steps.
+**First time?** Start with [docs/SETUP.md](docs/SETUP.md) (30 min), then [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 ## Project layout
 
@@ -65,26 +66,39 @@ Each folder has its own README with details on its contents:
 |---|---|
 | [docs/](docs/README.md) | Design docs, execution plan, setup guides |
 | [mcp-server/](mcp-server/README.md) | The Pixel Atlas MCP server (Python) |
-| [templates/](templates/README.md) | Tag template catalog + fallback seed data |
+| `recipes/` | Auto-grown cache of validated Generation Specs (gitignored) |
 | [.vscode/](.vscode/README.md) | MCP server registration for VS Code |
 | [.github/](.github/README.md) | Copilot chat mode, instructions, and slash-command prompt files |
 | [staging/](staging/README.md) | Scratch output for in-progress generation jobs (gitignored) |
 | [scripts/](scripts/README.md) | `setup.ps1` — happy-path environment bootstrap |
-| `.pixel-atlas/logs/` | Runtime audit log (`agent.log`, gitignored) — see [solution-design.md §13](docs/solution-design.md#13-status--observability) |
+| `.pixel-atlas/logs/` | Runtime audit log (`agent.log`, gitignored) — see [solution-design.md](docs/solution-design.md) |
 
-## Copilot agent design docs
+## How to generate (30-second version)
 
-Design for the GitHub Copilot agent that generates/modifies test DICOM data on request:
+```
+User: "100 axial CT instances"
+  ↓
+Claude Code (via MCP)
+  ↓
+find_recipe → (hit: reuse spec) or (miss: author spec, grounded on the KB)
+  ↓
+validate_spec(spec) → materialize_dataset(spec_id, instance_count=100)
+  ↓
+[MCP server: synthesize pixels, assign UIDs, save .dcm files]
+  ↓
+validate_dataset [IOD conformance check]
+  ↓
+store_to_pacs [copy to Orthanc]
+  ↓
+✓ Study in PACS
+```
 
-- [Use cases](docs/use-cases.md) — actors, commands, and detailed use cases
-- [Solution design](docs/solution-design.md) — workflow, template system, validation, token economy
-- [Architecture](docs/architecture.md) — components, MCP server spec, deployment, and diagrams
-- [execution plan](docs/execution-plan-phases1-3.md) — implementation scope/schedule for the current build
-- [Demo script](docs/demo-script.md) — end-to-end walkthrough of every implemented command
-- [Sample prompts](docs/sample-prompts.md) — 3-4 example Copilot Chat prompts per use case, for ad hoc manual testing
+## How it works (deeper dive)
 
-## Implementation status
+- **[Solution Design](docs/solution-design.md)** — Knowledge Base, Generation Spec format, Materializer, token economy
+- **[Architecture](docs/architecture.md)** — Components, MCP tool reference, data flow diagrams
+- **[Simple Overview](docs/ai-driven-simple-overview.md)** — 10-minute plain-English explanation
 
-See [Implementation Status](docs/implementation-status.md) for the detailed
-phase-by-phase build log, local dev environment setup, Copilot Chat testing
-steps, troubleshooting table, and what's not yet implemented.
+## Full Documentation
+
+See [docs/README.md](docs/README.md) for the complete guide index.

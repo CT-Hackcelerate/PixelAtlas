@@ -23,34 +23,24 @@ import random
 import shutil
 import subprocess
 import uuid
+from collections import defaultdict
 from pathlib import Path
 
 import pydicom
-from dicom_validator.spec_reader.edition_reader import EditionReader
 from dicom_validator.validator.dicom_file_validator import DicomFileValidator
 from dicom_validator.validator.error_handler import ValidationResultHandlerBase
 from dicom_validator.validator.validation_result import Status
 
 import config
+import iod_lookup
 import orthanc_client
-
-_dicom_info = None
 
 
 def _get_dicom_info():
-    """Lazily load (and cache in-process) the DICOM standard info dicom-validator needs.
-
-    First call per server process downloads/parses the standard (~40s); every
-    call after that, in this process or a later one thanks to dicom-validator's
-    own on-disk cache, is effectively free.
-    """
-    global _dicom_info
-    if _dicom_info is None:
-        edition_reader = EditionReader(str(config.DICOM_VALIDATOR_STANDARD_PATH))
-        edition = edition_reader.get_edition("current")
-        edition_reader.get_edition_path(edition, False)
-        _dicom_info = edition_reader.load_dicom_info(edition)
-    return _dicom_info
+    """Shared with the Knowledge Base (iod_lookup) so the ~40s standard-data load
+    happens at most once per process, whether triggered by validation or by a
+    KB lookup."""
+    return iod_lookup.get_dicom_info()
 
 
 def _select_sample(files: list[Path]) -> list[Path]:
@@ -65,8 +55,15 @@ def _select_sample(files: list[Path]) -> list[Path]:
 
 
 def _structural_checks(files: list[Path]) -> tuple[list[str], list[str]]:
+    """A file set is one study, but legitimately many series (multi-series
+    studies from modify_dataset/generate_prior_study, or a multi-series
+    generation via request.attachStudyUID) — so StudyInstanceUID must be
+    identical across every file, but SeriesInstanceUID varying is normal and
+    InstanceNumber only needs to increase *within* each series, not globally
+    across series boundaries."""
     errors: list[str] = []
-    study_uids, series_uids, sop_uids, instance_numbers = set(), set(), set(), []
+    study_uids, sop_uids = set(), set()
+    by_series: dict[str, list[tuple[int, str]]] = defaultdict(list)
 
     for f in files:
         try:
@@ -75,21 +72,23 @@ def _structural_checks(files: list[Path]) -> tuple[list[str], list[str]]:
             errors.append(f"{f.name}: failed to read ({exc})")
             continue
         study_uids.add(getattr(ds, "StudyInstanceUID", None))
-        series_uids.add(getattr(ds, "SeriesInstanceUID", None))
+        series_uid = getattr(ds, "SeriesInstanceUID", None)
         sop_uid = getattr(ds, "SOPInstanceUID", None)
         if sop_uid in sop_uids:
             errors.append(f"{f.name}: duplicate SOPInstanceUID {sop_uid}")
         sop_uids.add(sop_uid)
-        instance_numbers.append(int(getattr(ds, "InstanceNumber", 0)))
-        if not getattr(ds, "PixelData", None):
+        by_series[series_uid].append((int(getattr(ds, "InstanceNumber", 0) or 0), f.name))
+        # Reference objects (PR/KO) legitimately carry no pixel data.
+        if not iod_lookup.is_reference_object(str(getattr(ds, "SOPClassUID", ""))) and not getattr(ds, "PixelData", None):
             errors.append(f"{f.name}: missing PixelData")
 
     if len(study_uids) > 1:
         errors.append(f"StudyInstanceUID not identical across instances: {study_uids}")
-    if len(series_uids) > 1:
-        errors.append(f"SeriesInstanceUID not identical across instances: {series_uids}")
-    if instance_numbers != sorted(instance_numbers):
-        errors.append("InstanceNumber is not strictly increasing across the file set")
+
+    for series_uid, entries in by_series.items():
+        numbers = [n for n, _ in entries]
+        if numbers != sorted(numbers):
+            errors.append(f"InstanceNumber is not strictly increasing within series {series_uid}: {numbers}")
 
     warnings: list[str] = []
     return errors, warnings
@@ -154,7 +153,7 @@ def _materialize_study(study_uid: str) -> Path:
     # sort by the actual tag (same fix as modify.py) so the InstanceNumber-ordering
     # structural check reflects the real sequence, not Orthanc's storage order.
     datasets_by_id = {iid: pydicom.dcmread(io.BytesIO(orthanc_client.fetch_instance_bytes(iid))) for iid in instance_ids}
-    ordered_ids = sorted(datasets_by_id, key=lambda iid: int(getattr(datasets_by_id[iid], "InstanceNumber", 0)))
+    ordered_ids = sorted(datasets_by_id, key=lambda iid: int(getattr(datasets_by_id[iid], "InstanceNumber", 0) or 0))
 
     out_dir = config.STAGING_DIR / f"validate-{uuid.uuid4().hex[:8]}"
     out_dir.mkdir(parents=True, exist_ok=True)
