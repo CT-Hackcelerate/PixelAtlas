@@ -6,9 +6,7 @@ Generate realistic, customizable DICOM test dataset for development, testing and
 Two things split the work: the **AI coding agent** (Claude Code or Copilot
 Chat, in VS Code) decides *what* to do and confirms risky steps with you; the
 **MCP server** (`mcp-server/`, plain Python) does the *how*, deterministically
-— no LLM involved once a tool is called. See
-[docs/ai-driven-simple-overview.md](docs/ai-driven-simple-overview.md) for a
-plain-English walkthrough with diagrams and real token-cost numbers.
+— no LLM involved once a tool is called.
 
 ```mermaid
 flowchart TD
@@ -53,10 +51,7 @@ flowchart TD
 
 ## Quick Start
 
-1. **[Complete Setup (one guide)](docs/SETUP.md)** — WSL, Docker, Git, VS Code, Python, Orthanc, MCP
-2. **[Usage Examples](docs/QUICKSTART.md)** — Basic generation, multi-series, PR/KO, common commands
-
-**First time?** Start with [docs/SETUP.md](docs/SETUP.md) (30 min), then [docs/QUICKSTART.md](docs/QUICKSTART.md).
+**[Complete Setup (one guide)](docs/SETUP.md)** — WSL, Docker, Git, VS Code, Python, Orthanc, MCP (~30 min)
 
 ## Project layout
 
@@ -97,7 +92,6 @@ store_to_pacs [copy to Orthanc]
 
 - **[Solution Design](docs/solution-design.md)** — Knowledge Base, Generation Spec format, Materializer, token economy
 - **[Architecture](docs/architecture.md)** — Components, MCP tool reference, data flow diagrams
-- **[Simple Overview](docs/ai-driven-simple-overview.md)** — 10-minute plain-English explanation
 
 ## Full Documentation
 
