@@ -294,7 +294,6 @@ After all steps are complete:
 
 ## Next Steps
 
-- Read [QUICKSTART.md](QUICKSTART.md) for common workflows
 - See [solution-design.md](solution-design.md) for how the system works
-- Check [sample-prompts.md](sample-prompts.md) for example requests
+- Check [demo-prompts.md](demo-prompts.md) for example requests
 - See [scripts/README.md](../scripts/README.md) for what `setup.ps1` automates

@@ -3,8 +3,7 @@
 Descriptive, DICOM-literate prompts for live demos. Each one is written the
 way a PACS/QA engineer would phrase a real request — modality, anatomy, and
 the specific tags/attributes that matter — rather than a terse tool-call
-shorthand. See [sample-prompts.md](sample-prompts.md) for the plainer
-regression-style prompts and [CLAUDE.md](../CLAUDE.md) for the tool contract.
+shorthand. See [CLAUDE.md](../CLAUDE.md) for the tool contract.
 
 Each prompt below is followed by:
 - **Command** — the slash command that maps to this prompt, if one exists
@@ -415,8 +414,7 @@ Generate a prior study based on <study_uid>.
 ```
 No `daysBefore` given — the right behavior is the agent asking how far back
 rather than guessing. Good for demonstrating the tool refuses to silently
-invent a default where none is sensible (already called out in
-sample-prompts.md §2).
+invent a default where none is sensible.
 
 **E. An intentionally out-of-scope ask, to show the refusal path:**
 

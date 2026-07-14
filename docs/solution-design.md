@@ -15,6 +15,22 @@ from the DICOM standard and covering every SOP Class the standard defines.
 There is no per-modality template to author before a new scan type can be
 generated.
 
+```mermaid
+flowchart LR
+    User(("User")) -- "plain-English request" --> Agent["AI coding agent<br/>(Claude Code / Copilot Chat)"]
+    Agent -- "tool calls (JSON):<br/>find_recipe, validate_spec,<br/>materialize_dataset, store_to_pacs" --> MCP["Pixel Atlas MCP server<br/>(mcp-server/, plain Python)"]
+    MCP -- "tool results (JSON):<br/>spec_id, job summary, UIDs" --> Agent
+    MCP -- "grounds against" --> KB[("Knowledge Base<br/>(DICOM standard, derived once)")]
+    MCP -- "builds & stores .dcm files" --> PACS[("Orthanc PACS")]
+    Agent -- "summary + confirmation asks" --> User
+```
+
+The agent never touches a `.dcm` byte or the PACS directly — only small JSON
+(tool calls and results) crosses the line between it and the MCP server. The
+server never guesses a tag value — it grounds what the agent authors against
+the Knowledge Base, and does the deterministic DICOM engineering (pixel
+synthesis, UID assignment, storage).
+
 ## 2. Design principles
 
 1. **Knowledge is derived from the standard, once, and reused.** IOD/module/tag
