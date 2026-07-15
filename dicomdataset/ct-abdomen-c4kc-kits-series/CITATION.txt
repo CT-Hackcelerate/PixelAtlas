@@ -1,8 +1,0 @@
-Abdominal CT — C4KC-KiTS Kidney Study
-Source collection: C4KC-KiTS (Kidney Tumor Segmentation Challenge)
-License: CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/)
-
-Data citation:
-Heller, N., Sathianathen, N., Kalapara, A., Walczak, E., Moore, K., Kaluzniak, H., Rosenberg, J., Blake, P., Rengel, Z., Oestreich, M., Dean, J., Tradewell, M., Shah, A., Tejpaul, R., Edgerton, Z., Peterson, M., Raza, S., Regmi, S., Papanikolopoulos, N., Weight, C. (2019). Data from C4KC-KiTS [Data set]. The Cancer Imaging Archive. https://doi.org/10.7937/TCIA.2019.IX49E8NX
-
-Redistributed by Saga IT (saga-it.com/dicom/samples) under the Creative Commons Attribution license above. Sourced from the NCI Imaging Data Commons (portal.imaging.datacommons.cancer.gov).
