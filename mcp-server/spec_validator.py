@@ -48,6 +48,43 @@ def _check_pixel_directive(pixel: dict, errors: list):
         errors.append({"tag": "pixel", "reason": f"generator must be one of {sorted(_ALLOWED_GENERATORS)}"})
 
 
+def _check_references(sop_class: str, spec: dict, errors: list):
+    if not kb.is_reference_object(sop_class):
+        return
+    references = spec.get("references") or {}
+    series_list = references.get("series")
+    if not references.get("studyUID"):
+        errors.append({"tag": "references", "reason": "references.studyUID is required for PR/KO"})
+    if not series_list:
+        errors.append({"tag": "references", "reason": "references.series must be a non-empty list of {seriesUID, instances}"})
+        return
+    for i, series in enumerate(series_list):
+        if not isinstance(series, dict) or not series.get("seriesUID"):
+            errors.append({"tag": "references", "reason": f"references.series[{i}] must be an object with a seriesUID"})
+            continue
+        instances = series.get("instances")
+        if not instances:
+            errors.append({"tag": "references", "reason": f"references.series[{i}].instances must be a non-empty list"})
+            continue
+        for j, inst in enumerate(instances):
+            if not isinstance(inst, dict):
+                errors.append({
+                    "tag": "references",
+                    "reason": (
+                        f"references.series[{i}].instances[{j}] must be an object with "
+                        f"sopClassUID/sopInstanceUID (e.g. an entry from list_series_instances), got {inst!r}"
+                    ),
+                })
+                continue
+            sop_class_uid = inst.get("sopClassUID") or inst.get("sop_class_uid")
+            sop_instance_uid = inst.get("sopInstanceUID") or inst.get("sop_instance_uid")
+            if not sop_class_uid or not sop_instance_uid:
+                errors.append({
+                    "tag": "references",
+                    "reason": f"references.series[{i}].instances[{j}] is missing sopClassUID/sopInstanceUID: {inst!r}",
+                })
+
+
 def validate_spec(spec: dict) -> dict:
     errors: list[dict] = []
     warnings: list[dict] = []
@@ -89,6 +126,7 @@ def validate_spec(spec: dict) -> dict:
     # cross-tag rules
     if not kb.is_reference_object(sop_class):
         _check_pixel_directive(spec.get("pixel") or {}, errors)
+    _check_references(sop_class, spec, errors)
 
     declared_modality = attributes.get("Modality") or (spec.get("request") or {}).get("modality")
     expected_modality = kb.modality_for_sop_class(sop_class)

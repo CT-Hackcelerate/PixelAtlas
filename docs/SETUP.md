@@ -25,6 +25,10 @@ cd C:\dev\PixelAtlas
 See [scripts/README.md](../scripts/README.md) for what it covers. The manual
 steps below are for troubleshooting or understanding what the script does.
 
+`setup.ps1` doesn't seed any data — once it finishes, optionally run
+`.\scripts\upload_seed_dataset.ps1` to load the bundled sample DICOM files
+into Orthanc (see Part 4.4 below).
+
 ---
 
 ## Part 1: Docker & WSL Setup
@@ -134,6 +138,23 @@ Open http://localhost:8042 in your browser.
 
 - **Username:** orthanc
 - **Password:** orthanc
+
+### 4.4 Seed Orthanc with sample DICOM files (optional)
+
+The repo ships a small set of sample studies under
+[dicomdataset/](../dicomdataset/) (CR/CT/MRI/PX chest, knee, jaw, plus a
+couple of public multi-series datasets). Upload them all into Orthanc so
+there's something to browse/reference right away, without generating
+anything first:
+
+```powershell
+cd C:\dev\PixelAtlas
+.\scripts\upload_seed_dataset.ps1
+```
+
+This uploads every `*.dcm` file it finds via Orthanc's REST API. It's safe
+to re-run — Orthanc dedupes by SOPInstanceUID, so already-stored files are
+skipped. See [scripts/README.md](../scripts/README.md) for details.
 
 ---
 

@@ -197,6 +197,25 @@ def _code_item(value, scheme, meaning) -> pydicom.Dataset:
     return it
 
 
+def _instance_ref(inst) -> tuple[str, str]:
+    """Normalize one `references.series[].instances[]` entry to
+    (sopClassUID, sopInstanceUID). Accepts either camelCase (the spec-authoring
+    convention) or snake_case (what list_series_instances returns) keys, so a
+    caller can pass that tool's output straight through without reshaping it."""
+    if not isinstance(inst, dict):
+        raise SpecError(
+            f"references.series[].instances[] entries must be objects with "
+            f"sopClassUID/sopInstanceUID (e.g. from list_series_instances), got {inst!r}"
+        )
+    sop_class = inst.get("sopClassUID") or inst.get("sop_class_uid")
+    sop_instance = inst.get("sopInstanceUID") or inst.get("sop_instance_uid")
+    if not sop_class or not sop_instance:
+        raise SpecError(
+            f"references.series[].instances[] entry is missing sopClassUID/sopInstanceUID: {inst!r}"
+        )
+    return sop_class, sop_instance
+
+
 def _referenced_series_sequence(references: dict) -> pydicom.Sequence:
     items = []
     for series in references.get("series", []):
@@ -204,9 +223,10 @@ def _referenced_series_sequence(references: dict) -> pydicom.Sequence:
         s.SeriesInstanceUID = series["seriesUID"]
         ref_images = []
         for inst in series.get("instances", []):
+            sop_class, sop_instance = _instance_ref(inst)
             ri = pydicom.Dataset()
-            ri.ReferencedSOPClassUID = inst["sopClassUID"]
-            ri.ReferencedSOPInstanceUID = inst["sopInstanceUID"]
+            ri.ReferencedSOPClassUID = sop_class
+            ri.ReferencedSOPInstanceUID = sop_instance
             ref_images.append(ri)
         s.ReferencedImageSequence = pydicom.Sequence(ref_images)
         items.append(s)
@@ -745,9 +765,10 @@ def _flat_referenced_images(references: dict) -> pydicom.Sequence:
     items = []
     for series in references.get("series", []):
         for inst in series.get("instances", []):
+            sop_class, sop_instance = _instance_ref(inst)
             ri = pydicom.Dataset()
-            ri.ReferencedSOPClassUID = inst["sopClassUID"]
-            ri.ReferencedSOPInstanceUID = inst["sopInstanceUID"]
+            ri.ReferencedSOPClassUID = sop_class
+            ri.ReferencedSOPInstanceUID = sop_instance
             items.append(ri)
     return pydicom.Sequence(items)
 
@@ -759,9 +780,10 @@ def _ko_evidence_series(references: dict) -> pydicom.Sequence:
         s.SeriesInstanceUID = series["seriesUID"]
         refs = []
         for inst in series.get("instances", []):
+            sop_class, sop_instance = _instance_ref(inst)
             r = pydicom.Dataset()
-            r.ReferencedSOPClassUID = inst["sopClassUID"]
-            r.ReferencedSOPInstanceUID = inst["sopInstanceUID"]
+            r.ReferencedSOPClassUID = sop_class
+            r.ReferencedSOPInstanceUID = sop_instance
             refs.append(r)
         s.ReferencedSOPSequence = pydicom.Sequence(refs)
         items.append(s)
@@ -772,12 +794,13 @@ def _ko_content_sequence(references: dict, description: str) -> pydicom.Sequence
     items = []
     for series in references.get("series", []):
         for inst in series.get("instances", []):
+            sop_class, sop_instance = _instance_ref(inst)
             c = pydicom.Dataset()
             c.RelationshipType = "CONTAINS"
             c.ValueType = "IMAGE"
             r = pydicom.Dataset()
-            r.ReferencedSOPClassUID = inst["sopClassUID"]
-            r.ReferencedSOPInstanceUID = inst["sopInstanceUID"]
+            r.ReferencedSOPClassUID = sop_class
+            r.ReferencedSOPInstanceUID = sop_instance
             c.ReferencedSOPSequence = pydicom.Sequence([r])
             items.append(c)
     return pydicom.Sequence(items)
