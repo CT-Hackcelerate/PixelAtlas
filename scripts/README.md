@@ -4,11 +4,15 @@
 |---|---|
 | `setup.ps1` | Happy-path bootstrap: checks Docker, starts/creates the Orthanc container, sets up `.venv` + `mcp-server` dependencies, checks for DCMTK (soft dependency, informational only), and runs `health_check` to confirm everything works. Automates the native-venv setup described in [SETUP.md](../docs/SETUP.md) — the MCP server itself always runs as a local Python subprocess, never containerized; only Orthanc runs in Docker. |
 | `reset_orthanc.ps1` | Deletes **all** studies from the local Orthanc PACS via its REST API — a full reset of the test PACS between runs. Irreversible; prompts for confirmation unless `-Yes` is passed. Reads the same `ORTHANC_URL`/`ORTHANC_USER`/`ORTHANC_PASSWORD` env vars as `mcp-server/config.py`. |
+| `upload_seed_dataset.ps1` | Uploads every `*.dcm` file under [dicomdataset/](../dicomdataset/) into the local Orthanc PACS via its REST API, so a freshly set-up environment has some real studies to browse right away. Safe to re-run — Orthanc dedupes by SOPInstanceUID. Reads the same `ORTHANC_URL`/`ORTHANC_USER`/`ORTHANC_PASSWORD` env vars as `mcp-server/config.py`. |
 
 Run from the repo root or from `scripts/` itself:
 
 ```powershell
 .\scripts\setup.ps1
+
+# seed the local PACS with the bundled sample DICOM files
+.\scripts\upload_seed_dataset.ps1
 
 # wipe every study from the local test PACS
 .\scripts\reset_orthanc.ps1 OR
