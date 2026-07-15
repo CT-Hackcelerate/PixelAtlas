@@ -3,3 +3,5 @@ pydicom>=2.4
 requests>=2.31
 numpy>=1.26
 dicom-validator>=0.8.2
+pylibjpeg>=2.1.0
+pylibjpeg-libjpeg>=2.4.0

@@ -86,9 +86,15 @@ def _structural_checks(files: list[Path]) -> tuple[list[str], list[str]]:
         errors.append(f"StudyInstanceUID not identical across instances: {study_uids}")
 
     for series_uid, entries in by_series.items():
-        numbers = [n for n, _ in entries]
-        if numbers != sorted(numbers):
-            errors.append(f"InstanceNumber is not strictly increasing within series {series_uid}: {numbers}")
+        # `files` is sorted by filename (SOPInstanceUID), which has no relation to
+        # acquisition order — checking "already increasing in that order" was a
+        # false-positive machine (flags any valid series whose files just don't
+        # happen to sort alphabetically by InstanceNumber). Sort by the tag itself
+        # first; what actually indicates a real defect is a duplicate/missing
+        # InstanceNumber, not the on-disk file order.
+        numbers = sorted(n for n, _ in entries)
+        if len(numbers) != len(set(numbers)):
+            errors.append(f"Duplicate InstanceNumber within series {series_uid}: {numbers}")
 
     warnings: list[str] = []
     return errors, warnings
@@ -157,8 +163,9 @@ def _materialize_study(study_uid: str) -> Path:
 
     out_dir = config.STAGING_DIR / f"validate-{uuid.uuid4().hex[:8]}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    for i, instance_id in enumerate(ordered_ids):
-        datasets_by_id[instance_id].save_as(out_dir / f"IM{i:04d}.dcm", enforce_file_format=True)
+    for instance_id in ordered_ids:
+        ds = datasets_by_id[instance_id]
+        ds.save_as(out_dir / f"{ds.SOPInstanceUID}.dcm", enforce_file_format=True)
     return out_dir
 
 

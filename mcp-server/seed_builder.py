@@ -65,6 +65,32 @@ def synth_pixels(pixel: dict, frames: int = 1, frame_idx: int = 0) -> tuple[np.n
     return pixel_array, tags
 
 
+def build_volume(datasets: list) -> np.ndarray:
+    """Stack real, physically-ordered slices (pydicom Datasets) into one 3D
+    array (z, rows, cols[, spp]) — the "volume" a PACS-seeded interpolation
+    reslices along its z-axis."""
+    return np.stack([ds.pixel_array for ds in datasets], axis=0)
+
+
+def reslice_volume(volume: np.ndarray, real_z: np.ndarray, target_z: np.ndarray) -> np.ndarray:
+    """Resample `volume` along its z-axis (axis 0) at `target_z` physical
+    positions, given the real slices' own physical z positions `real_z`
+    (monotonic, same length as volume's first axis). Linear interpolation
+    only; in-plane (x/y) resolution is untouched. Returns a new 3D array of
+    shape (len(target_z), *volume.shape[1:]) — a target_z exactly matching a
+    real_z value reproduces that real plane unchanged (frac == 0)."""
+    dtype = volume.dtype
+    real_z = np.asarray(real_z, dtype=np.float64)
+    out = np.empty((len(target_z), *volume.shape[1:]), dtype=np.float64)
+    for i, z in enumerate(target_z):
+        lo = int(np.searchsorted(real_z, z, side="right") - 1)
+        lo = min(max(lo, 0), len(real_z) - 2)
+        hi = lo + 1
+        frac = (z - real_z[lo]) / (real_z[hi] - real_z[lo]) if real_z[hi] != real_z[lo] else 0.0
+        out[i] = (1 - frac) * volume[lo].astype(np.float64) + frac * volume[hi].astype(np.float64)
+    return np.clip(np.round(out), 0, np.iinfo(dtype).max).astype(dtype)
+
+
 def build_base(sop_class_uid: str, modality: str | None, pixel: dict | None,
                frames: int = 1, with_pixels: bool = True,
                include_frame_of_reference: bool = False) -> FileDataset:

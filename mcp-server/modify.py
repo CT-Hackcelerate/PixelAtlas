@@ -58,7 +58,7 @@ def modify_dataset(study_uid: str, overrides: dict | None = None, per_instance: 
                 apply_value_map(ds, overrides)
                 if per_instance:
                     apply_per_instance(ds, per_instance, local_i)
-                ds.save_as(staging_dir / f"IM{idx:04d}.dcm", enforce_file_format=True)
+                ds.save_as(staging_dir / f"{ds.SOPInstanceUID}.dcm", enforce_file_format=True)
                 idx += 1
     except Exception as exc:
         job_registry.update_job(job_id, state="failed", message=str(exc))

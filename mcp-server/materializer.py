@@ -13,6 +13,8 @@ All in-process with pydicom. Reuses uid_strategy, job_registry, orthanc_client,
 seed_builder, and validator (for the probe).
 """
 
+import bisect
+import copy
 import io
 import random
 import uuid
@@ -211,6 +213,118 @@ def _referenced_series_sequence(references: dict) -> pydicom.Sequence:
     return pydicom.Sequence(items)
 
 
+# --- PACS-seed slice interpolation (opt-in via seedSource.interpolate) -----
+_INTERP_PHOTOMETRICS = ("MONOCHROME1", "MONOCHROME2", "RGB")
+
+
+def _prepare_interpolation(ordered_real: list, count: int, study_uid: str) -> dict:
+    """Validate a PACS-seeded, count > real_count request for
+    seedSource.interpolate, then build the volume (real slices stacked by
+    physical SliceLocation) and reslice it at `count` evenly-spaced target z
+    positions spanning the same real physical range — the new SliceThickness
+    falls straight out of that spacing, it isn't guessed."""
+    real_count = len(ordered_real)
+    if count < 2 or real_count < 2:
+        raise SpecError(
+            f"seedSource.interpolate requires at least 2 real instances and a requested "
+            f"count of at least 2 — got {real_count} real instance(s) and count={count}."
+        )
+    locations = [r["slice_location"] for r in ordered_real]
+    if any(loc is None for loc in locations):
+        raise SpecError(
+            f"PACS seed study '{study_uid}' has one or more real instances with no "
+            "SliceLocation — cannot compute physical interpolation positions."
+        )
+    if any(b <= a for a, b in zip(locations, locations[1:])):
+        raise SpecError(
+            f"PACS seed study '{study_uid}' real instances are not strictly monotonic by "
+            "SliceLocation — cannot compute physical interpolation positions."
+        )
+    real_ds = [pydicom.dcmread(io.BytesIO(orthanc_client.fetch_instance_bytes(r["orthanc_id"])))
+               for r in ordered_real]
+    photometric = getattr(real_ds[0], "PhotometricInterpretation", "")
+    if photometric not in _INTERP_PHOTOMETRICS:
+        raise SpecError(
+            f"seedSource.interpolate doesn't support PhotometricInterpretation="
+            f"'{photometric}' (only {'/'.join(_INTERP_PHOTOMETRICS)} are supported)."
+        )
+
+    if real_ds[0].file_meta.TransferSyntaxUID.is_compressed:
+        try:
+            volume = seed_builder.build_volume(real_ds)
+        except Exception as exc:
+            raise SpecError(
+                f"PACS seed study '{study_uid}' uses a compressed transfer syntax "
+                f"({real_ds[0].file_meta.TransferSyntaxUID.name}) and no installed "
+                f"decompression codec (gdcm/pylibjpeg) could decode it: {exc}"
+            ) from exc
+    else:
+        volume = seed_builder.build_volume(real_ds)
+    lo_loc, hi_loc = locations[0], locations[-1]
+    step = (hi_loc - lo_loc) / (count - 1)
+    target_z = [lo_loc + i * step for i in range(count)]
+    new_volume = seed_builder.reslice_volume(volume, locations, target_z)
+    return {
+        "real_ds": real_ds, "locations": locations, "target_z": target_z,
+        "new_volume": new_volume, "slice_thickness": abs(step),
+    }
+
+
+def _materialize_interpolated_instance(interp: dict, i: int) -> pydicom.Dataset:
+    """Build instance `i` of an interpolated PACS-seeded series: pixel data
+    from the resliced volume, geometry lerp'd between the two real slices
+    bracketing this instance's target z, and DERIVED provenance tags
+    whenever the target didn't land exactly on a real slice (frac == 0 means
+    it did, and this instance's pixel data is that real slice's, unmodified)."""
+    locations = interp["locations"]
+    z = interp["target_z"][i]
+    lo = bisect.bisect_right(locations, z) - 1
+    lo = min(max(lo, 0), len(locations) - 2)
+    hi = lo + 1
+    span = locations[hi] - locations[lo]
+    frac = (z - locations[lo]) / span if span else 0.0
+
+    # NOTE: real_ds[lo] is reused across every new instance that brackets between
+    # the same two real slices — pydicom's Dataset.copy() is a *shallow* copy that
+    # shares the underlying tag dict (mutating one copy's tags mutates all others
+    # derived from the same source), so a true deepcopy is required here.
+    ds = copy.deepcopy(interp["real_ds"][lo])
+    ds.PixelData = interp["new_volume"][i].tobytes()
+    # new_volume holds decoded (uncompressed) arrays regardless of the source's
+    # transfer syntax — the written bytes no longer match a compressed source's
+    # original encoding, so the file_meta must reflect that (same fix as the
+    # classic multi-frame PACS-seed path).
+    ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    ipp_lo = getattr(interp["real_ds"][lo], "ImagePositionPatient", None)
+    ipp_hi = getattr(interp["real_ds"][hi], "ImagePositionPatient", None)
+    if ipp_lo is not None and ipp_hi is not None:
+        ds.ImagePositionPatient = [round(float(a) + frac * (float(b) - float(a)), 3)
+                                    for a, b in zip(ipp_lo, ipp_hi)]
+    ds.SliceLocation = str(round(z, 3))
+    ds.SliceThickness = str(round(interp["slice_thickness"], 3))
+    ds.SpacingBetweenSlices = str(round(interp["slice_thickness"], 3))
+
+    if frac != 0.0:
+        image_type = list(getattr(ds, "ImageType", None) or ["ORIGINAL", "PRIMARY"])
+        image_type[0] = "DERIVED"
+        ds.ImageType = image_type
+        ds.DerivationDescription = (
+            f"PixelAtlas: linearly interpolated between real slices at SliceLocation "
+            f"{locations[lo]:.3f} and {locations[hi]:.3f} (frac={frac:.3f})"
+        )
+        ds.SourceImageSequence = pydicom.Sequence([
+            _code_item_ref(interp["real_ds"][k]) for k in (lo, hi)
+        ])
+    return ds
+
+
+def _code_item_ref(source_ds: pydicom.Dataset) -> pydicom.Dataset:
+    ref = pydicom.Dataset()
+    ref.ReferencedSOPClassUID = source_ds.SOPClassUID
+    ref.ReferencedSOPInstanceUID = source_ds.SOPInstanceUID
+    return ref
+
+
 # --- branch: single-frame / pacs-seed --------------------------------------
 def _materialize_single_frame(spec, sop_class, modality, count, job_id, staging_dir):
     seed = (spec.get("request") or {}).get("seedSource") or {}
@@ -225,23 +339,31 @@ def _materialize_single_frame(spec, sop_class, modality, count, job_id, staging_
 
     # base dataset
     ordered_real = None
+    interpolation = None
     if seed.get("type") == "pacs":
         study_uid = seed.get("studyUID")
         if not study_uid:
             raise SpecError("seedSource.type == 'pacs' requires a studyUID")
         # Real per-instance pixel data is cloned untouched (no synthesis) for as many
         # instances as the source study actually has — never fabricated beyond that.
-        ordered_real = orthanc_client.list_instances_ordered(study_uid)
+        # seedSource.seriesUID optionally scopes to one series of a multi-series study
+        # (otherwise every series' instances would be mixed together).
+        ordered_real = orthanc_client.list_instances_ordered(study_uid, series_uid=seed.get("seriesUID"))
         real_count = len(ordered_real)
         if real_count == 0:
             raise SpecError(f"PACS study '{study_uid}' has no stored instances to clone from")
         if count > real_count:
-            raise SpecError(
-                f"Requested {count} instances but PACS seed study '{study_uid}' only has "
-                f"{real_count} real instances to clone pixel data from. Reduce instance_count "
-                f"to at most {real_count}, or author an IOD-path spec (no PACS seed) to "
-                "synthesize pixel data for a larger count."
-            )
+            if not seed.get("interpolate"):
+                raise SpecError(
+                    f"Requested {count} instances but PACS seed study '{study_uid}' only has "
+                    f"{real_count} real instances to clone pixel data from. Reduce instance_count "
+                    f"to at most {real_count}, author an IOD-path spec (no PACS seed) to "
+                    "synthesize pixel data for a larger count, or set seedSource.interpolate=true "
+                    "to build a volume from the real slices and reslice it at a finer spacing "
+                    "(real slices are reproduced exactly; the new in-between slices are "
+                    "DERIVED/blended, not 100% real)."
+                )
+            interpolation = _prepare_interpolation(ordered_real, count, study_uid)
         base = pydicom.dcmread(io.BytesIO(orthanc_client.fetch_instance_bytes(ordered_real[0]["orthanc_id"])))
         pixel_directive = None
     else:
@@ -259,14 +381,28 @@ def _materialize_single_frame(spec, sop_class, modality, count, job_id, staging_
     new_series_uid = uid_strategy.new_uid(job_id, "series")
 
     for i in range(count):
-        if ordered_real is not None:
+        if interpolation is not None:
+            # Instance i's pixel data comes from the resliced volume; its geometry is
+            # lerp'd between the two real slices bracketing its target z position.
+            ds = _materialize_interpolated_instance(interpolation, i)
+            apply_value_map(ds, attributes)
+            apply_value_map(ds, identity)
+            apply_value_map(ds, overrides)
+        elif ordered_real is not None:
             # Clone the i-th real source instance's own pixel data + geometry as-is;
             # only re-apply attributes/identity/overrides on top (base already has them).
             ds = base.copy() if i == 0 else pydicom.dcmread(
                 io.BytesIO(orthanc_client.fetch_instance_bytes(ordered_real[i]["orthanc_id"]))
             )
             if i > 0:
-                apply_value_map(ds, attributes)
+                # extract_spec only ever reads ONE representative instance, so
+                # `attributes` carries that single instance's ImagePositionPatient/
+                # SliceLocation — reapplying it verbatim here would stamp every
+                # other real clone with instance 0's position instead of its own
+                # real, just-cloned geometry. Exclude these two so "geometry as-is"
+                # (see comment above) actually holds for i > 0 too.
+                per_instance_geometry = {"ImagePositionPatient", "SliceLocation"}
+                apply_value_map(ds, {k: v for k, v in attributes.items() if k not in per_instance_geometry})
                 apply_value_map(ds, identity)
                 apply_value_map(ds, overrides)
         else:
@@ -284,7 +420,7 @@ def _materialize_single_frame(spec, sop_class, modality, count, job_id, staging_
         ds.SeriesInstanceUID = new_series_uid
         ds.SOPInstanceUID = new_sop_uid
         ds.file_meta.MediaStorageSOPInstanceUID = new_sop_uid
-        ds.save_as(staging_dir / f"IM{i:04d}.dcm", enforce_file_format=True)
+        ds.save_as(staging_dir / f"{new_sop_uid}.dcm", enforce_file_format=True)
 
         if i == 0:
             probe = _probe(staging_dir, job_id)
@@ -362,7 +498,7 @@ def _materialize_classic_mf(spec, sop_class, modality, frames, job_id, staging_d
     ds.SeriesInstanceUID = new_series_uid
     ds.SOPInstanceUID = new_sop_uid
     ds.file_meta.MediaStorageSOPInstanceUID = new_sop_uid
-    ds.save_as(staging_dir / "IM0000.dcm", enforce_file_format=True)
+    ds.save_as(staging_dir / f"{new_sop_uid}.dcm", enforce_file_format=True)
 
     probe = _probe(staging_dir, job_id)
     if probe is not None:
@@ -453,7 +589,7 @@ def _materialize_enhanced_mf(spec, sop_class, modality, frames, job_id, staging_
     ds.SeriesInstanceUID = new_series_uid
     ds.SOPInstanceUID = new_sop_uid
     ds.file_meta.MediaStorageSOPInstanceUID = new_sop_uid
-    ds.save_as(staging_dir / "IM0000.dcm", enforce_file_format=True)
+    ds.save_as(staging_dir / f"{new_sop_uid}.dcm", enforce_file_format=True)
 
     probe = _probe(staging_dir, job_id)
     if probe is not None:
@@ -553,7 +689,7 @@ def _materialize_reference(spec, sop_class, job_id, staging_dir):
     ds.SeriesInstanceUID = new_series_uid
     ds.SOPInstanceUID = new_sop_uid
     ds.file_meta.MediaStorageSOPInstanceUID = new_sop_uid
-    ds.save_as(staging_dir / "IM0000.dcm", enforce_file_format=True)
+    ds.save_as(staging_dir / f"{new_sop_uid}.dcm", enforce_file_format=True)
 
     probe = _probe(staging_dir, job_id)
     if probe is not None:
@@ -660,7 +796,8 @@ def _probe(staging_dir, job_id):
     if not result.get("passed"):
         try:
             import pydicom
-            ds = pydicom.dcmread(staging_dir / "IM0000.dcm")
+            probe_file = next(iter(sorted(staging_dir.glob("*.dcm"))))
+            ds = pydicom.dcmread(probe_file)
             is_pr = ds.get("Modality") == "PR"
             has_graphics = hasattr(ds, "GraphicAnnotationSequence")
 

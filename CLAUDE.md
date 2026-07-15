@@ -19,7 +19,18 @@ per-instance expansion).
   `get_iod_requirements`/`describe_attributes` to ground yourself in what a
   SOP Class actually requires, then write the `attributes` (flat
   `{Keyword: value}` map — not the DICOM JSON Model), `perInstance` rules, and
-  `pixel` directive yourself. Never read DICOM files from disk to do this.
+  `pixel` directive yourself. Never read DICOM files from disk to author a
+  fresh IOD-path spec — ground yourself via the KB tools instead.
+- **Exception: modifying or generating from an existing PACS-stored file.**
+  When the user asks to modify an existing DICOM study/series, or to
+  generate new data using an existing stored study as the basis, you may
+  read all tags directly off the stored `.dcm` file(s) in the PACS —
+  including ones the query tools don't expose at series/instance
+  granularity (e.g. per-series `SeriesDescription`, `ImageOrientationPatient`,
+  `ImagePositionPatient`). This is read-only inspection of real,
+  already-stored data to inform what you do next; it doesn't change how
+  `modify_dataset`/`extract_spec` themselves are called, and it never
+  applies to authoring a fresh IOD-path spec from scratch.
 - **Never loop.** If a tool returns an `error`, report it to the user and
   stop. Do not call the same tool again with the same/similar args hoping for
   a different result. A `validate_spec` failure gets at most a couple of
@@ -50,7 +61,10 @@ per-instance expansion).
   superset/mismatch of what was asked for). Tell the user what was found
   (study description, real instance count, why it may or may not match) and
   let them pick real-vs-synthetic before authoring further. This is cheap to
-  ask up front and irreversible-feeling to redo after the fact.
+  ask up front and irreversible-feeling to redo after the fact. When the
+  requested count exceeds the real instance count, there are **three**
+  options, not two — see the `requested > real` bullet under Standard flow
+  step 2 — always ask, never pick one silently.
 
 ## Standard flow — generate a study
 
@@ -63,6 +77,11 @@ per-instance expansion).
    - **Miss** → step 2.
 2. Author the spec.
    - `resolve_seed(modality, body_part?, orientation?, enhanced?)`.
+   - When the real seed study has multiple series, set
+     `spec["request"]["seedSource"]["seriesUID"]` to the one series to clone
+     from — without it, every series' instances are mixed together (wrong
+     for cloning, and would fail the `interpolate` path's monotonic-
+     `SliceLocation` precondition outright).
    - `source_type: "pacs"` → before calling `extract_spec`, confirm with the
      user which seed to use (see golden rule above) — real PACS candidate vs.
      fresh IOD-authored synthetic spec. Once confirmed, `extract_spec
@@ -73,14 +92,30 @@ per-instance expansion).
      against the requested count before calling `materialize_dataset`: tell
      the user what was found (study + real instance count), then —
      requested ≤ real → proceed (it's doable, real pixel data all the way);
-     requested > real → stop and ask the user to either lower the count to
-     at most the real count, or drop the PACS seed and author a fresh
-     IOD-path spec instead (synthetic pixel data, any count). Don't call
-     `materialize_dataset` with a too-high count hoping it'll work — the
-     server blocks it outright. Same principle for multi-frame (classic
-     cine / enhanced): the real source instance's actual `NumberOfFrames`
-     is the ceiling — requested frames ≤ real frames clones real pixel data
-     per frame; requested frames > real frames is blocked the same way.
+     requested > real → stop and ask the user which of **three** options
+     they want: (a) lower the count to at most the real count (100% real);
+     (b) drop the PACS seed and author a fresh IOD-path spec instead
+     (synthetic pixel data, any count); or (c) keep the real PACS seed but
+     set `spec["request"]["seedSource"]["interpolate"] = true` — the
+     Materializer stacks the real slices into a volume (by physical
+     `SliceLocation`) and reslices it at the finer spacing the requested
+     count implies. Real slices reappear exactly, unmodified, at their
+     correct positions; the new in-between slices are a linear blend
+     between their real neighbors and are marked `ImageType[0] = "DERIVED"`
+     (with `DerivationDescription`/`SourceImageSequence` naming the two real
+     slices they came from) — not 100% real, but real-geometry-anchored
+     rather than fabricated from scratch. Requires ≥2 real instances with
+     monotonic `SliceLocation`, an uncompressed transfer syntax, and
+     MONOCHROME1/MONOCHROME2/RGB photometric interpretation — `validate_spec`
+     surfaces a clear error naming which precondition failed. Don't call
+     `materialize_dataset` with a too-high count and no `interpolate` flag
+     hoping it'll work — the server blocks it outright. Same principle for
+     multi-frame (classic cine / enhanced): the real source instance's
+     actual `NumberOfFrames` is the ceiling — requested frames ≤ real frames
+     clones real pixel data per frame; requested frames > real frames is
+     blocked the same way (no interpolation option there yet — frame
+     interpolation is a temporal/motion question, not spatial slice
+     density, and isn't supported).
    - `source_type: "iod"` → `get_iod_requirements(modality, enhanced?)`
      (compact form — do not pass `full=true` unless a repair truly needs the
      detailed VR/enum dump) to see the mandatory modules/tags; use
@@ -103,7 +138,12 @@ per-instance expansion).
 5. `materialize_dataset(spec_id, instance_count=count)`. A KB-authored spec
    that materializes successfully is auto-cached as a recipe server-side —
    nothing for you to do there.
-6. Show the summary, get confirmation, then
+6. Silently run a standalone `validate_dataset(path=output_path)` full-set
+   check (materialize_dataset only validated one probe instance). Don't
+   narrate this step or dump its report — only surface it to the user if it
+   finds errors (`errors`/`iod_conformance.files_with_errors` non-empty), in
+   which case report those errors and stop before offering to store.
+7. Show the summary, get confirmation, then
    `store_to_pacs(output_path, confirm_store=True)`.
 
 **Multi-series studies** (see docs/solution-design.md §14): generate + store

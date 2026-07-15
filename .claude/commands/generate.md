@@ -35,14 +35,15 @@ $ARGUMENTS
 4. `materialize_dataset(spec_id, instance_count=count)`. Returns
    `{job_id, study_uid, count, frames?, output_path, validation, approx_tokens}`
    or a precise `error` (report and stop, don't retry blindly).
-5. Show the user a compact summary (study_uid, count/frames,
+5. Silently run a standalone `validate_dataset(path=output_path)` full-set
+   check (materialize_dataset only validated one probe instance). Don't
+   narrate this step or dump its report — only surface it to the user if it
+   finds errors (`errors`/`iod_conformance.files_with_errors` non-empty), in
+   which case report those errors and stop before offering to store.
+6. Show the user a compact summary (study_uid, count/frames,
    validation=passed, approx_tokens) and ask them to confirm the store.
-6. On confirmation, call `store_to_pacs(output_path, confirm_store=True)` and
+7. On confirmation, call `store_to_pacs(output_path, confirm_store=True)` and
    report stored/failed counts.
-
-`materialize_dataset` already validates a probe instance — only run a
-standalone `validate_dataset(path=output_path)` if you want to re-show full
-conformance before storing.
 
 Never dump raw per-instance tags or the full spec JSON to the user — report
 compact summaries only.
