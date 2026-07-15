@@ -139,13 +139,19 @@ def list_instance_geometry(study_uid: str, timeout: float = 10.0) -> list[dict]:
     return [{"instance_number": n, "slice_location": s} for n, s in geo]
 
 
-def list_instances_ordered(study_uid: str, timeout: float = 10.0) -> list[dict]:
+def list_instances_ordered(study_uid: str, series_uid: str | None = None, timeout: float = 10.0) -> list[dict]:
     """Every real instance of a study (Orthanc ID + geometry), sorted by SliceLocation
     (falling back to InstanceNumber) — used to clone genuine per-instance pixel data
-    when materializing from a PACS seed, instead of synthesizing noise per instance."""
+    when materializing from a PACS seed, instead of synthesizing noise per instance.
+    Pass `series_uid` to scope to one series of a multi-series study (same
+    StudyInstanceUID+SeriesInstanceUID query shape as list_series_instances) —
+    otherwise every series' instances are mixed together."""
+    query = {"StudyInstanceUID": study_uid}
+    if series_uid:
+        query["SeriesInstanceUID"] = series_uid
     body = {
         "Level": "Instance",
-        "Query": {"StudyInstanceUID": study_uid},
+        "Query": query,
         "Expand": True,
         "RequestedTags": ["InstanceNumber", "SliceLocation", "SOPInstanceUID"],
     }

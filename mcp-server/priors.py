@@ -69,7 +69,7 @@ def generate_prior_study(study_uid: str, days_before: int, overrides: dict | Non
             for ds in group:
                 ds.StudyDate = new_date
                 apply_value_map(ds, overrides)
-                ds.save_as(staging_dir / f"IM{idx:04d}.dcm", enforce_file_format=True)
+                ds.save_as(staging_dir / f"{ds.SOPInstanceUID}.dcm", enforce_file_format=True)
                 idx += 1
     except Exception as exc:
         job_registry.update_job(job_id, state="failed", message=str(exc))

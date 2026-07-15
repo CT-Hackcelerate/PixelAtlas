@@ -84,16 +84,20 @@ def resolve_seed(modality: str, body_part: str | None = None, orientation: str |
 
 
 @mcp.tool()
-def extract_spec(study_uid: str | None = None, path: str | None = None) -> dict:
+def extract_spec(study_uid: str | None = None, path: str | None = None, series_uid: str | None = None) -> dict:
     """Turn an existing PACS study (or local .dcm path) into a Generation Spec you
     can edit (apply overrides, set count) and then validate_spec + materialize.
+    Pass series_uid to scope to one series of a multi-series study (use
+    list_series_instances to see the series first) — otherwise a multi-series
+    study is refused since extract_spec builds a spec from one representative
+    instance and is structurally single-series.
     No PHI scrubbing — test data only."""
     try:
-        spec = spec_extractor.extract_spec(study_uid=study_uid, path=path)
-        audit_log.log_call("extract_spec", {"study_uid": study_uid, "path": bool(path)}, f"{len(spec.get('attributes', {}))} attributes")
+        spec = spec_extractor.extract_spec(study_uid=study_uid, path=path, series_uid=series_uid)
+        audit_log.log_call("extract_spec", {"study_uid": study_uid, "path": bool(path), "series_uid": series_uid}, f"{len(spec.get('attributes', {}))} attributes")
         return spec
     except SpecError as exc:
-        audit_log.log_call("extract_spec", {"study_uid": study_uid}, f"error: {exc}")
+        audit_log.log_call("extract_spec", {"study_uid": study_uid, "series_uid": series_uid}, f"error: {exc}")
         return {"error": str(exc)}
 
 

@@ -43,8 +43,15 @@ def coerce_value(value):
 
 def apply_value_map(ds: pydicom.Dataset, mapping: dict) -> None:
     """Apply keyword->value pairs with strict VR validation, raising SpecError
-    (naming the tag) on a bad value instead of silently writing garbage."""
+    (naming the tag) on a bad value instead of silently writing garbage. A
+    value of None deletes the tag from ds instead of setting it — e.g. to
+    strip a tag a cloned/interpolated real source file happens to carry that
+    isn't valid for the target IOD."""
     for keyword, value in (mapping or {}).items():
+        if value is None:
+            if hasattr(ds, keyword):
+                delattr(ds, keyword)
+            continue
         try:
             with strict_value_validation():
                 setattr(ds, keyword, coerce_value(value))
