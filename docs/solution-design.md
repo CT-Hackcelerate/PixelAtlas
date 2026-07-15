@@ -416,7 +416,14 @@ instead of one call per study:
 - **`list_series_instances(study_uid, series_uid=None)`** enumerates a
   stored study/series' instances — the way an agent gets concrete SOP
   Instance UIDs to put in a PR/KO's `references` block, without ever reading
-  a `.dcm` file directly.
+  a `.dcm` file directly. Each returned instance is an object with
+  `sop_class_uid`/`sop_instance_uid` (snake_case) — pass it straight into
+  `references.series[].instances[]`; the Materializer also accepts the
+  camelCase `sopClassUID`/`sopInstanceUID` form if you're authoring an
+  instance reference by hand instead of from `list_series_instances`. A bare
+  UID string is not accepted — `validate_spec` rejects it with a specific
+  `references` error rather than letting it fail deep inside
+  `materialize_dataset`.
 
 Flow for "2 CT series + a PR pointing at series 1's first image":
 
@@ -428,7 +435,7 @@ Flow for "2 CT series + a PR pointing at series 1's first image":
    confirm → `store_to_pacs` → `series_uid_2`, same study, same patient
    identity.
 3. `list_series_instances(study_uid, series_uid_1)` → pick the target
-   instance(s).
+   instance(s), e.g. `{"sop_class_uid": "...", "sop_instance_uid": "...", ...}`.
 4. Author a PR spec: `{"references": {"studyUID": study_uid, "series":
    [{"seriesUID": series_uid_1, "instances": [that instance]}]}}` →
    `validate_spec` → `materialize_dataset` → confirm → `store_to_pacs`.
